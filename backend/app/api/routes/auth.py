@@ -154,9 +154,19 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)) -> Mess
             # "already exists" branch above.
             await db.rollback()
         else:
-            token = await issue_verification_token(str(user.id))
-            subject, body_txt = verification_email_body(token)
-            await send_email(user.email, subject, body_txt)
+            # Issue the verification token and send the email *before* we
+            # consider the registration a success. If SMTP fails, roll the
+            # user row back so the address can be re-registered cleanly on
+            # retry — otherwise a transient mail outage leaves orphan
+            # accounts that can't verify and can't re-register.
+            try:
+                token = await issue_verification_token(str(user.id))
+                subject, body_txt = verification_email_body(token)
+                await send_email(user.email, subject, body_txt)
+            except Exception:
+                await db.delete(user)
+                await db.commit()
+                raise
 
     return MessageOut(message="If that email is new, we've sent a verification link.")
 
