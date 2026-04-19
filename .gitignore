@@ -1,0 +1,36 @@
+# Matchbook v2 — root gitignore.
+# Keep the repo lean: no secrets, no build artefacts, no dependency trees.
+# Anything a contributor needs should be reproducible from source + .env.example.
+
+# Secrets — NEVER commit a real .env. .env.example is the committed template.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Python / FastAPI backend
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / React frontend
+node_modules/
+dist/
+.vite/
+*.log
+
+# Docker volumes when mounted locally
+postgres_data/
+redis_data/
+uploads/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

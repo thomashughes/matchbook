@@ -1,0 +1,85 @@
+/*
+ * Warm Modern design tokens — single source of truth for colour.
+ * Tailwind reads these via var(--token), so any change here cascades
+ * through every component without a rebuild of the theme config.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --cream: #f7f3ee;
+  --parchment: #efe9df;
+  --card: #ffffff;
+  --border: #e0d9cf;
+  --ink: #1e1a15;
+  --ink-2: #5c5446;
+  --ink-3: #9e9488;
+  --teal: #0a6c5e;
+  --teal-light: #e8f5f2;
+  --rust: #b84a28;
+  --rust-light: #fdf0eb;
+  --gold: #9a6f1a;
+  --gold-light: #fdf6e3;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-feature-settings: 'ss01', 'cv01';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Reusable building blocks — kept in CSS (not component props) so they're
+   applied consistently without prop-drilling and so global tweaks land
+   everywhere at once. */
+@layer components {
+  .mb-card {
+    @apply bg-card rounded-card p-5 md:p-6;
+    border: 0.5px solid var(--border);
+  }
+
+  .mb-input {
+    @apply w-full bg-card rounded-lg px-3 py-2.5 text-ink placeholder:text-ink-3;
+    border: 0.5px solid var(--border);
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .mb-input:focus {
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px var(--teal-light);
+  }
+
+  .mb-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 font-medium transition;
+  }
+  .mb-btn-primary {
+    @apply mb-btn text-white;
+    background: var(--rust);
+  }
+  .mb-btn-primary:hover {
+    filter: brightness(0.95);
+  }
+  .mb-btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .mb-btn-ghost {
+    @apply mb-btn text-ink-2;
+  }
+  .mb-btn-ghost:hover {
+    color: var(--ink);
+  }
+
+  .mb-label {
+    @apply block text-sm font-medium text-ink-2 mb-1.5;
+  }
+
+  .mb-display {
+    @apply font-display font-medium tracking-tight;
+  }
+}

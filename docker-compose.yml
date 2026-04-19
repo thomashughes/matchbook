@@ -1,0 +1,123 @@
+# Matchbook v2 — local & production service topology.
+#
+# Why Docker Compose (and not PM2 / bare systemd): the stack has four services
+# (postgres, redis, backend, frontend) that must boot in order and share a
+# private network. Compose gives us one-command up/down, dependency ordering,
+# named volumes for persistence, and an isolated bridge network that keeps
+# Postgres/Redis unreachable from the public internet — only the two proxied
+# ports (3085/3086) are exposed on the host.
+#
+# Port map (see handoff §2.2):
+#   3085 → frontend Nginx (Apache proxies the public domain here)
+#   3086 → FastAPI       (Apache proxies /api here)
+#   postgres/redis are NOT published — they're reachable only on the compose
+#   bridge network, so even if another local app were compromised it cannot
+#   reach our DB without being inside this network.
+
+services:
+  postgres:
+    # Debian-based image (not -alpine). The Alpine image has hit an ICU
+    # locale bootstrap failure ("could not open collator for locale 'und'")
+    # on certain Docker Desktop builds. The Debian variant avoids it with
+    # no meaningful cost — ~80MB extra, irrelevant for a VPS deploy.
+    image: postgres:16
+    # Restart unless-stopped: survive reboots and crashes, but respect a
+    # deliberate `docker compose down` during deploys.
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      # Named volume (not a host bind mount) so Docker manages permissions
+      # and the DB data survives `docker compose down` without leaving files
+      # in the project directory that might accidentally be committed.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready returns 0 only once Postgres accepts connections. The
+      # backend's depends_on uses this to wait for a *ready* DB, not just a
+      # running container — otherwise migrations race against startup.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # --appendonly yes enables AOF persistence. Rate-limit state is
+    # technically recoverable (worst case: one window of generous limits),
+    # but email-verification tokens live here too and losing them would
+    # strand users mid-signup.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # depends_on with service_healthy means backend only starts after the DB
+    # is accepting connections — prevents the classic "connection refused"
+    # race on first boot.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      REDIS_URL: ${REDIS_URL}
+      JWT_PRIVATE_KEY_PATH: /keys/jwt_private.pem
+      JWT_PUBLIC_KEY_PATH: /keys/jwt_public.pem
+      JWT_ACCESS_TTL_MINUTES: ${JWT_ACCESS_TTL_MINUTES}
+      JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS}
+      FERNET_KEY: ${FERNET_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      FRONTEND_URL: ${FRONTEND_URL}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      ENVIRONMENT: ${ENVIRONMENT}
+    volumes:
+      # Uploaded CVs and job files — stored on a named volume *outside* the
+      # web root (the frontend container has no access) so they can never
+      # be served directly, only read from Python.
+      - uploads_data:/var/matchbook/uploads
+      # RSA keypair mounted read-only. Keys live outside the image so we
+      # don't bake secrets into a distributable artefact.
+      - ./backend/keys:/keys:ro
+    ports:
+      - "3086:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Vite bakes env vars into the static bundle at build time, so
+        # FRONTEND_URL cannot be changed without rebuilding the image.
+        VITE_API_BASE_URL: /api/v1
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3085:80"
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:

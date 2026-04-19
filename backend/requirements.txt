@@ -1,0 +1,55 @@
+# FastAPI + ASGI server. uvicorn[standard] pulls in httptools & uvloop for
+# better throughput than the pure-Python defaults.
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# SQLAlchemy 2.0 — async-first ORM. asyncpg is the async driver used by the
+# app at runtime; psycopg2-binary is the sync driver used only by Alembic
+# migrations (Alembic's runtime model is synchronous).
+sqlalchemy==2.0.35
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+alembic==1.13.3
+
+# Redis client. redis-py 5.x ships native asyncio support under redis.asyncio,
+# so we don't need a separate aioredis package.
+redis==5.1.1
+
+# Pydantic v2 for request/response schemas; pydantic-settings reads env vars
+# with type-safe validation at startup (fail fast if config is malformed).
+pydantic==2.9.2
+pydantic-settings==2.5.2
+email-validator==2.2.0
+
+# Auth / crypto.
+# - passlib[bcrypt]: bcrypt password hashing at cost 12 (config-driven).
+#   bcrypt is pinned to 4.0.1 because passlib 1.7.4 probes bcrypt via a
+#   `__about__.__version__` attribute that was removed in bcrypt 4.1+, and
+#   its backend-init probe also trips the >72-byte guard added in 4.1.
+#   Until passlib releases a fix, pin the last compatible bcrypt.
+# - python-jose[cryptography]: JWT encode/decode with RS256.
+# - cryptography: Fernet symmetric encryption for OAuth tokens at rest.
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-jose[cryptography]==3.3.0
+cryptography==43.0.1
+
+# File handling (Phase 2+). Listed now so the image is Phase-2-ready.
+python-magic==0.4.27
+pdfplumber==0.11.4
+python-docx==1.1.2
+
+# Anthropic SDK (Phase 2+).
+# 0.55+ is the first line that ships the web_search_20250305 server tool
+# used by the company-research feature. Older pins would force us to hand-
+# roll the tool request via raw HTTP — not worth it. All prior callers
+# (complete_json / complete_text) use the same messages.create signature
+# and are unaffected by the bump.
+anthropic==0.55.0
+
+# HTTP + HTML parsing for URL job ingestion (Phase 2+).
+httpx==0.27.2
+beautifulsoup4==4.12.3
+
+# Multipart parsing for file uploads (FastAPI needs this for UploadFile).
+python-multipart==0.0.12
