@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "Matchbook <noreply@localhost>"
+    # Plesk postfix presents a self-signed cert on localhost; verifying would
+    # reject every connection. When STARTTLS goes over the docker bridge to
+    # the host the traffic never leaves the machine, so TLS here is for
+    # credential protection, not authenticity. Set false in prod (VPS with
+    # local postfix); leave true if pointing at an external SMTP provider.
+    SMTP_VERIFY_TLS: bool = True
 
     # --- App URLs / CORS ---------------------------------------------------
     FRONTEND_URL: str = "http://localhost:3085"

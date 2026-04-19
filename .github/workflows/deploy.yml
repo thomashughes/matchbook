@@ -1,0 +1,58 @@
+name: Deploy to production
+
+# Fires on every push to main + manual dispatch. Deployment is idempotent
+# (git reset to origin/main + docker compose build) so re-runs are safe.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one deploy at a time. cancel-in-progress: false so an in-flight
+# deploy finishes cleanly instead of being killed mid-build.
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull, build, restart
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              "${DEPLOY_USER}@${DEPLOY_HOST}" \
+              "bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/matchbookv2
+          git fetch --quiet origin main
+          git reset --hard origin/main
+          docker compose up -d --build
+          # Give migrations + uvicorn time to come up before smoke test.
+          sleep 8
+          echo '--- compose ps ---'
+          docker compose ps
+          echo '--- healthz ---'
+          curl -sS --max-time 10 http://localhost:3086/healthz
+          echo
+          REMOTE
+
+      - name: Public smoke test
+        run: |
+          echo '--- public / ---'
+          curl -sI --max-time 10 https://matchbook.tag-art.co.uk/ | head -5
+          echo '--- public /api/v1/profile (expect 401) ---'
+          curl -s -o /dev/null -w "HTTP %{http_code}\n" --max-time 10 \
+            https://matchbook.tag-art.co.uk/api/v1/profile

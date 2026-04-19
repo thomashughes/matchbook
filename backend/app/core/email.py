@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import secrets
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 from app.core.config import get_settings
@@ -96,11 +97,17 @@ def _send_sync(to: str, subject: str, body: str) -> None:
     msg["Subject"] = subject
     msg.set_content(body)
 
-    # STARTTLS on 587 is the standard modern path (SMTPS on 465 is fine too
-    # but Plesk defaults to 587). starttls() upgrades the plaintext socket
-    # to TLS before authentication — credentials are never sent in clear.
+    # STARTTLS upgrades the plaintext socket to TLS before authentication so
+    # credentials are never sent in clear. SMTP_VERIFY_TLS=false skips cert
+    # validation — the right choice when reaching a local Plesk postfix
+    # over the docker bridge, where traffic never leaves the host but the
+    # server presents a self-signed cert.
+    ctx = ssl.create_default_context()
+    if not settings.SMTP_VERIFY_TLS:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
     with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as s:
-        s.starttls()
+        s.starttls(context=ctx)
         if settings.SMTP_USER:
             s.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
         s.send_message(msg)
