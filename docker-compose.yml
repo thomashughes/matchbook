@@ -71,6 +71,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Host bridge for reaching services on the VPS outside the compose network
+    # (Plesk postfix on port 25 for transactional email). host-gateway is a
+    # docker-managed alias that resolves to the host's bridge IP on Linux and
+    # host.docker.internal natively on Docker Desktop — same config works in
+    # dev and prod.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: ${DATABASE_URL}
       DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
