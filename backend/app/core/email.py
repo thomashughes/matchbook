@@ -25,6 +25,7 @@ import secrets
 import smtplib
 import ssl
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 
 from app.core.config import get_settings
 from app.core.rate_limit import get_redis
@@ -95,6 +96,11 @@ def _send_sync(to: str, subject: str, body: str) -> None:
     msg["From"] = settings.SMTP_FROM
     msg["To"] = to
     msg["Subject"] = subject
+    # Gmail (and most reputable receivers) reject RFC-5322 non-compliant
+    # messages — Message-ID and Date are required. Python's EmailMessage
+    # does not populate them automatically, so we set them explicitly.
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=settings.SMTP_HOST or None)
     msg.set_content(body)
 
     # STARTTLS upgrades the plaintext socket to TLS before authentication so
