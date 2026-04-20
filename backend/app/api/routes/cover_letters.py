@@ -19,8 +19,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_verified_user, rate_limit_ai
+from app.api.deps import entitlement, get_verified_user, rate_limit_ai
 from app.core.database import get_db
+from app.core.entitlements import refund
 from app.models.cover_letter import CoverLetter
 from app.models.job import Job
 from app.models.profile import Profile
@@ -58,7 +59,10 @@ def _out(row: CoverLetter) -> CoverLetterOut:
     "",
     response_model=CoverLetterOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(rate_limit_ai)],
+    dependencies=[
+        Depends(rate_limit_ai),
+        Depends(entitlement("cover_letter", "job")),
+    ],
 )
 async def generate(
     job_id: UUID,
@@ -71,53 +75,57 @@ async def generate(
     Pulls the profile + job, runs the prompt through complete_text (plain
     string, no JSON overhead), and persists as the next version number.
     """
-    job = await _own_job(job_id, user, db)
+    try:
+        job = await _own_job(job_id, user, db)
 
-    prof = await db.execute(select(Profile).where(Profile.user_id == user.id))
-    profile = prof.scalar_one_or_none()
-    if profile is None or profile.structured_data is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="Complete onboarding before generating a cover letter.",
+        prof = await db.execute(select(Profile).where(Profile.user_id == user.id))
+        profile = prof.scalar_one_or_none()
+        if profile is None or profile.structured_data is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Complete onboarding before generating a cover letter.",
+            )
+
+        content = await complete_text(
+            system=cl_prompt.SYSTEM,
+            user=cl_prompt.build_user_message(
+                profile.structured_data,
+                job.description_raw,
+                tone=body.tone,
+                length=body.length,
+                company=job.company,
+                title=job.title,
+            ),
+            # Letters can run long on 'detailed'; give headroom so we never
+            # truncate mid-sentence.
+            max_tokens=2048,
         )
 
-    content = await complete_text(
-        system=cl_prompt.SYSTEM,
-        user=cl_prompt.build_user_message(
-            profile.structured_data,
-            job.description_raw,
+        # Next version = current max + 1. A SELECT MAX race is harmless here:
+        # worst case two concurrent generations get the same version number,
+        # which is cosmetic, and we accept it per the model's comment.
+        max_v = await db.execute(
+            select(func.coalesce(func.max(CoverLetter.version), 0)).where(
+                CoverLetter.job_id == job.id
+            )
+        )
+        next_version = int(max_v.scalar() or 0) + 1
+
+        row = CoverLetter(
+            job_id=job.id,
+            user_id=user.id,
+            content=content,
             tone=body.tone,
             length=body.length,
-            company=job.company,
-            title=job.title,
-        ),
-        # Letters can run long on 'detailed'; give headroom so we never
-        # truncate mid-sentence.
-        max_tokens=2048,
-    )
-
-    # Next version = current max + 1. A SELECT MAX race is harmless here:
-    # worst case two concurrent generations get the same version number,
-    # which is cosmetic, and we accept it per the model's comment.
-    max_v = await db.execute(
-        select(func.coalesce(func.max(CoverLetter.version), 0)).where(
-            CoverLetter.job_id == job.id
+            version=next_version,
         )
-    )
-    next_version = int(max_v.scalar() or 0) + 1
-
-    row = CoverLetter(
-        job_id=job.id,
-        user_id=user.id,
-        content=content,
-        tone=body.tone,
-        length=body.length,
-        version=next_version,
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-    return _out(row)
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return _out(row)
+    except Exception:
+        await refund(db, user, "cover_letter", scope_key=job_id)
+        raise
 
 
 @router.get("", response_model=list[CoverLetterOut])

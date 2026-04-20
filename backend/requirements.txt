@@ -53,3 +53,8 @@ beautifulsoup4==4.12.3
 
 # Multipart parsing for file uploads (FastAPI needs this for UploadFile).
 python-multipart==0.0.12
+
+# Stripe SDK — billing, Checkout sessions, Customer Portal, webhook
+# signature verification. Pinned to a recent stable line compatible with
+# the 2024-*/2025-* API versions used by the current Stripe dashboard.
+stripe==11.1.1

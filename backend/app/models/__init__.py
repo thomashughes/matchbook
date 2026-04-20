@@ -9,3 +9,4 @@ from app.models.cover_letter import CoverLetter  # noqa: F401
 from app.models.job_ai_output import JobAIOutput  # noqa: F401
 from app.models.interview import InterviewEvent  # noqa: F401
 from app.models.company_research import CompanyResearchCache  # noqa: F401
+from app.models.usage_counter import UsageCounter  # noqa: F401

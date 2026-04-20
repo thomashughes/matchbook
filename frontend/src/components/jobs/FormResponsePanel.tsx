@@ -23,6 +23,7 @@ import {
 } from '@/api/hooks';
 import type { JobAIOutput } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { QuotaCaption } from './QuotaCaption';
 
 // Keep the card-chip row readable when the question is long. 60 chars
 // is a hair over a typical tweet-length preview — enough to recognise
@@ -128,6 +129,7 @@ export function FormResponsePanel({ jobId }: { jobId: string }) {
                   ? 'Draft answer'
                   : 'Draft another'}
             </button>
+            <QuotaCaption jobId={jobId} resource="draft_form_response" />
           </div>
         </div>
       </div>

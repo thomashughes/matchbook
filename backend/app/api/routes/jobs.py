@@ -27,8 +27,10 @@ from fastapi import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_verified_user, rate_limit_ai
+from app.api.deps import entitlement, get_current_user, get_verified_user, rate_limit_ai
 from app.core.database import get_db
+from app.core.entitlements import RESOURCES, current_window, plan_limit, refund
+from app.models.usage_counter import UsageCounter
 from app.models.job import Job
 from app.models.job_score import JobScore
 from app.models.profile import Profile
@@ -40,6 +42,7 @@ from app.schemas.jobs import (
     JobDetailOut,
     JobListItem,
     JobPatch,
+    JobQuotaItem,
     JobScoreOut,
 )
 from app.services.ai_service import complete_json
@@ -97,7 +100,11 @@ def _score_out(s: JobScore | None) -> JobScoreOut | None:
     )
 
 
-def _detail_out(job: Job, score: JobScore | None) -> JobDetailOut:
+def _detail_out(
+    job: Job,
+    score: JobScore | None,
+    quota: list[JobQuotaItem] | None = None,
+) -> JobDetailOut:
     return JobDetailOut(
         id=job.id,
         title=job.title,
@@ -114,7 +121,53 @@ def _detail_out(job: Job, score: JobScore | None) -> JobDetailOut:
         created_at=job.created_at,
         updated_at=job.updated_at,
         score=_score_out(score),
+        quota=quota or [],
     )
+
+
+async def _job_quota(
+    user: User, job_id: UUID, db: AsyncSession
+) -> list[JobQuotaItem]:
+    """Return the per-job quota snapshot used by the UI to caption
+    generate buttons (e.g. "2 drafts left this month").
+
+    Only per-job resources (scope='job') appear — per-user resources
+    live on /billing/status so we don't duplicate them on every job
+    detail response.
+
+    One round trip: fetch all counter rows for (user, window, this job)
+    and merge with RESOURCES to fill zeros where the user hasn't used
+    that resource yet.
+    """
+    start, end = current_window(user)
+
+    rows = (
+        await db.execute(
+            select(UsageCounter.resource, UsageCounter.count).where(
+                UsageCounter.user_id == user.id,
+                UsageCounter.window_start == start,
+                UsageCounter.scope_key == job_id,
+            )
+        )
+    ).all()
+    by_resource: dict[str, int] = {r: int(c) for r, c in rows}
+
+    items: list[JobQuotaItem] = []
+    for key, spec in RESOURCES.items():
+        if spec.scope != "job":
+            continue
+        used = by_resource.get(key, 0)
+        limit = plan_limit(user, key)
+        items.append(
+            JobQuotaItem(
+                resource=key,
+                limit=limit,
+                used=used,
+                remaining=(None if limit is None else max(limit - used, 0)),
+                resets_at=end,
+            )
+        )
+    return items
 
 
 async def _score_and_persist(
@@ -177,79 +230,101 @@ async def _score_and_persist(
 # --- Create ---------------------------------------------------------------
 
 
-@router.post("", response_model=JobDetailOut, dependencies=[Depends(rate_limit_ai)])
+@router.post(
+    "",
+    response_model=JobDetailOut,
+    # Order matters: rate_limit_ai first (cheap, Redis) fails fast on
+    # abuse; entitlement second (DB write) only runs if we're under the
+    # burst cap. Both must pass. Entitlement consumes a "jobs_created"
+    # credit BEFORE we touch Anthropic — the refund on failure is in
+    # the route body below.
+    dependencies=[Depends(rate_limit_ai), Depends(entitlement("jobs_created"))],
+)
 async def create_job(
     body: JobCreateIn,
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ) -> JobDetailOut:
-    # Resolve description + title + company based on source type.
-    title: str | None = body.title
-    company: str | None = body.company
-    description: str
-    url: str | None = None
+    # Refund-on-failure: the entitlement dep has already CONSUMED a
+    # 'jobs_created' credit. If ANYTHING in this body fails — scrape
+    # error, too-short description, Anthropic 5xx, DB constraint — we
+    # must put that credit back. Otherwise a user who hit "Add Job"
+    # with a junk URL would silently burn credits on retry.
+    try:
+        # Resolve description + title + company based on source type.
+        title: str | None = body.title
+        company: str | None = body.company
+        description: str
+        url: str | None = None
 
-    if body.source_type == "paste":
-        if not body.description:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="description is required for paste")
-        description = body.description
-    elif body.source_type == "url":
-        if not body.url:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="url is required")
-        url = str(body.url)
-        scraped = await scrape_job_url(url)
-        description = scraped.description
-        if not title:
-            title = scraped.title
-        if not company:
-            company = scraped.company
-    elif body.source_type == "extension":
-        if not body.description:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="extension must send description")
-        description = body.description
-    else:  # defensive — Pydantic Literal should prevent this.
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="unsupported source_type")
+        if body.source_type == "paste":
+            if not body.description:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="description is required for paste")
+            description = body.description
+        elif body.source_type == "url":
+            if not body.url:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="url is required")
+            url = str(body.url)
+            scraped = await scrape_job_url(url)
+            description = scraped.description
+            if not title:
+                title = scraped.title
+            if not company:
+                company = scraped.company
+        elif body.source_type == "extension":
+            if not body.description:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="extension must send description")
+            description = body.description
+        else:  # defensive — Pydantic Literal should prevent this.
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="unsupported source_type")
 
-    if len(description) < 100:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="Job description is too short (min 100 characters).",
+        if len(description) < 100:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Job description is too short (min 100 characters).",
+            )
+
+        # Need a profile to score against.
+        prof = await db.execute(select(Profile).where(Profile.user_id == user.id))
+        profile = prof.scalar_one_or_none()
+        if profile is None or profile.structured_data is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Complete onboarding (upload CV + answer questions) before adding jobs.",
+            )
+
+        job = Job(
+            user_id=user.id,
+            title=title or "Untitled role",
+            company=company or "Unknown company",
+            location=None,
+            description_raw=description,
+            source_url=url,
+            source_type=body.source_type,
+            status="saved",
         )
+        db.add(job)
+        await db.flush()  # assigns job.id before we use it for the score row
 
-    # Need a profile to score against.
-    prof = await db.execute(select(Profile).where(Profile.user_id == user.id))
-    profile = prof.scalar_one_or_none()
-    if profile is None or profile.structured_data is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="Complete onboarding (upload CV + answer questions) before adding jobs.",
-        )
+        score = await _score_and_persist(job, profile, db)
 
-    job = Job(
-        user_id=user.id,
-        title=title or "Untitled role",
-        company=company or "Unknown company",
-        location=None,
-        description_raw=description,
-        source_url=url,
-        source_type=body.source_type,
-        status="saved",
-    )
-    db.add(job)
-    await db.flush()  # assigns job.id before we use it for the score row
-
-    score = await _score_and_persist(job, profile, db)
-
-    await db.commit()
-    await db.refresh(job)
-    await db.refresh(score)
-    return _detail_out(job, score)
+        await db.commit()
+        await db.refresh(job)
+        await db.refresh(score)
+        return _detail_out(job, score)
+    except Exception:
+        # DB rollback is handled by get_db() teardown on exception.
+        # We still need to reverse the entitlement counter — that was
+        # committed eagerly by the dep and won't roll back with the
+        # session.
+        await refund(db, user, "jobs_created")
+        raise
 
 
 @router.post(
     "/from-pdf",
     response_model=JobDetailOut,
-    dependencies=[Depends(rate_limit_ai)],
+    dependencies=[Depends(rate_limit_ai), Depends(entitlement("jobs_created"))],
 )
 async def create_from_pdf(
     file: UploadFile = File(...),
@@ -262,52 +337,60 @@ async def create_from_pdf(
     bytes. Title/company are left for the scoring step to infer from
     the text (same behaviour as a paste with no hints).
     """
-    data = await file.read()
-    description = extract_pdf_text(data)
+    try:
+        data = await file.read()
+        description = extract_pdf_text(data)
 
-    if len(description) < 100:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Couldn't pull enough text from that PDF — it may be an "
-                "image scan or mostly images. Try copy-pasting the "
-                "description instead."
-            ),
+        if len(description) < 100:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Couldn't pull enough text from that PDF — it may be an "
+                    "image scan or mostly images. Try copy-pasting the "
+                    "description instead."
+                ),
+            )
+
+        prof = await db.execute(select(Profile).where(Profile.user_id == user.id))
+        profile = prof.scalar_one_or_none()
+        if profile is None or profile.structured_data is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="Complete onboarding (upload CV + answer questions) before adding jobs.",
+            )
+
+        job = Job(
+            user_id=user.id,
+            title="Untitled role",
+            company="Unknown company",
+            location=None,
+            description_raw=description,
+            source_url=None,
+            source_type="pdf",
+            status="saved",
         )
+        db.add(job)
+        await db.flush()
 
-    prof = await db.execute(select(Profile).where(Profile.user_id == user.id))
-    profile = prof.scalar_one_or_none()
-    if profile is None or profile.structured_data is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="Complete onboarding (upload CV + answer questions) before adding jobs.",
-        )
+        score = await _score_and_persist(job, profile, db)
 
-    job = Job(
-        user_id=user.id,
-        title="Untitled role",
-        company="Unknown company",
-        location=None,
-        description_raw=description,
-        source_url=None,
-        source_type="pdf",
-        status="saved",
-    )
-    db.add(job)
-    await db.flush()
-
-    score = await _score_and_persist(job, profile, db)
-
-    await db.commit()
-    await db.refresh(job)
-    await db.refresh(score)
-    return _detail_out(job, score)
+        await db.commit()
+        await db.refresh(job)
+        await db.refresh(score)
+        return _detail_out(job, score)
+    except Exception:
+        await refund(db, user, "jobs_created")
+        raise
 
 
 @router.post(
     "/from-extension",
     response_model=JobDetailOut,
-    dependencies=[Depends(rate_limit_ai)],
+    # This route delegates to create_job as a plain function call, which
+    # bypasses create_job's own dep chain. So the entitlement dep MUST
+    # be declared here — the delegate won't consume a credit on our
+    # behalf. Exactly one consume per HTTP request, which is the goal.
+    dependencies=[Depends(rate_limit_ai), Depends(entitlement("jobs_created"))],
 )
 async def create_from_extension(
     body: JobCreateIn,
@@ -315,7 +398,12 @@ async def create_from_extension(
     db: AsyncSession = Depends(get_db),
 ) -> JobDetailOut:
     """Thin alias so the browser extension's endpoint is explicit in the
-    API surface. Hard-codes source_type = 'extension' regardless of body."""
+    API surface. Hard-codes source_type = 'extension' regardless of body.
+
+    Refund-on-failure is inherited from create_job's try/except below
+    (same user + resource → same counter row), so we don't repeat the
+    try/except here.
+    """
     body.source_type = "extension"
     return await create_job(body, user, db)
 
@@ -399,7 +487,8 @@ async def get_job(
 ) -> JobDetailOut:
     job = await _own_job(job_id, user, db)
     score = await _latest_score(job.id, db)
-    return _detail_out(job, score)
+    quota = await _job_quota(user, job.id, db)
+    return _detail_out(job, score, quota)
 
 
 @router.patch("/{job_id}", response_model=JobDetailOut)
@@ -415,7 +504,8 @@ async def patch_job(
     await db.commit()
     await db.refresh(job)
     score = await _latest_score(job.id, db)
-    return _detail_out(job, score)
+    quota = await _job_quota(user, job.id, db)
+    return _detail_out(job, score, quota)
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)

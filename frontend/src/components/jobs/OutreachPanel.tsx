@@ -26,6 +26,7 @@ import type {
   OutreachRecipientRole,
 } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { QuotaCaption } from './QuotaCaption';
 
 const CHANNELS: { value: OutreachChannel; label: string }[] = [
   { value: 'email', label: 'Email' },
@@ -128,6 +129,7 @@ export function OutreachPanel({ jobId }: { jobId: string }) {
                 ? 'Draft message'
                 : 'Draft another'}
           </button>
+          <QuotaCaption jobId={jobId} resource="draft_outreach" />
         </div>
       </div>
 

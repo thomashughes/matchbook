@@ -27,8 +27,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_verified_user, rate_limit_ai
+from app.api.deps import entitlement, get_verified_user, rate_limit_ai
 from app.core.database import get_db
+from app.core.entitlements import refund
 from app.models.company_research import CompanyResearchCache
 from app.models.job import Job
 from app.models.user import User
@@ -153,88 +154,123 @@ async def get_company_research(
     "",
     response_model=CompanyResearchOut,
     status_code=status.HTTP_200_OK,
-    # rate_limit_ai applies because POST always spends on web_search —
-    # this is the only path that incurs cost. GET is free.
-    dependencies=[Depends(rate_limit_ai)],
+    # Quota (one per explicit request) consumes whether we generate or
+    # serve cache. Burst limit still applies so a runaway frontend can't
+    # slam the endpoint. The "entitlement even on cache hit" choice is
+    # deliberate: the product is "3 researches per month" — charging
+    # the user a credit for cached results keeps that pitch honest and
+    # matches what they can see in the UI.
+    dependencies=[
+        Depends(rate_limit_ai),
+        Depends(entitlement("company_research")),
+    ],
 )
 async def generate_company_research(
     job_id: UUID,
     user: User = Depends(get_verified_user),
     db: AsyncSession = Depends(get_db),
 ) -> CompanyResearchOut:
-    """Generate (or regenerate) a briefing via Claude + web search.
+    """Handle an explicit "research this company" request.
 
-    Writes to the shared cache, upserting on normalised company_name.
-    Always runs — POST is the 'I explicitly want this' verb. Clients
-    that just want to read cached data should use GET.
+    Flow (after entitlement has already consumed one credit):
+        1. Resolve job + company, look up the cache.
+        2. If the cache is hot (not expired), return it with fresh=False.
+           No Anthropic call; the credit still counts.
+        3. Otherwise generate via Claude + web search, upsert the cache,
+           return fresh=True.
+        4. On any failure in step 3, refund the credit.
+
+    GET /jobs/{id}/company-research stays as a free cache read so
+    loading the job page doesn't burn a credit — only this POST does.
     """
-    job = await _own_job(job_id, user, db)
-    company = _resolve_company(job)
-    normalized = _norm(company)
-    now = datetime.now(timezone.utc)
+    try:
+        job = await _own_job(job_id, user, db)
+        company = _resolve_company(job)
+        normalized = _norm(company)
+        now = datetime.now(timezone.utc)
 
-    # Trim the JD before passing it as context. Full raw JDs can carry
-    # thousands of tokens of boilerplate (benefits, EEO, legal) that add
-    # nothing to the research bias and everything to the bill. Role +
-    # team signal typically sits in the first ~1500 chars.
-    jd_context = (job.description_raw or "")[:JD_CONTEXT_MAX_CHARS] or None
+        # Cache-first: the entitlement has already been counted, so a
+        # fresh cache row gives the user their briefing without any
+        # Anthropic spend on our side. Win-win at their quota cost.
+        cached_row = (
+            await db.execute(
+                select(CompanyResearchCache).where(
+                    CompanyResearchCache.company_name == normalized
+                )
+            )
+        ).scalar_one_or_none()
 
-    briefing, sources = await complete_text_with_web_search(
-        system=research_prompt.SYSTEM,
-        user=research_prompt.build_user_message(
-            company=company,
-            job_description=jd_context,
-        ),
-        # 4096 comfortably holds a thorough multi-section briefing plus
-        # source URLs; caps runaway output if Claude tries to summarise
-        # every search hit.
-        max_tokens=4096,
-        # 2 focused searches covers overview + news/culture for most
-        # companies. Each additional search pulls another full page of
-        # raw HTML into the next model turn as input tokens — this is
-        # the dominant cost of the whole call, so halving searches
-        # roughly halves the bill. Bumping back to 3 is reasonable if
-        # quality suffers on obscure companies.
-        max_searches=2,
-    )
+        if cached_row is not None and cached_row.expires_at > now:
+            # Cache hit, still fresh — return it as-is. `fresh=False`
+            # signals "this was cached", which the UI can show as a
+            # subtle "cached <N days> ago" badge.
+            return _to_out(cached_row, fresh=False)
 
-    # Belt-and-braces: despite the "no preamble" instruction, Claude
-    # sometimes narrates progress in the final text block ("Based on my
-    # searches, I now have enough information…") before emitting the
-    # OVERVIEW header. Drop everything before the first OVERVIEW line so
-    # the cached briefing starts cleanly. If OVERVIEW isn't present at
-    # all (sparse-data fallback), leave the text untouched.
-    overview_match = re.search(r"^OVERVIEW\s*$", briefing, re.MULTILINE)
-    if overview_match:
-        briefing = briefing[overview_match.start() :].rstrip()
+        # Cache miss or stale → generate. Trim the JD before passing
+        # it as context — full raw JDs can carry thousands of tokens
+        # of boilerplate (benefits, EEO, legal) that add nothing to
+        # the research bias and everything to the bill.
+        jd_context = (job.description_raw or "")[:JD_CONTEXT_MAX_CHARS] or None
 
-    expires_at = now + CACHE_TTL
-    research_data = {"briefing": briefing, "sources": sources}
-
-    # Upsert on company_name (unique index). ON CONFLICT lets us avoid a
-    # select-then-update round trip and handles the race where two users
-    # refresh the same company simultaneously — last writer wins, both
-    # get fresh data on their respective responses.
-    stmt = (
-        pg_insert(CompanyResearchCache)
-        .values(
-            company_name=normalized,
-            research_data=research_data,
-            cached_at=now,
-            expires_at=expires_at,
+        briefing, sources = await complete_text_with_web_search(
+            system=research_prompt.SYSTEM,
+            user=research_prompt.build_user_message(
+                company=company,
+                job_description=jd_context,
+            ),
+            # 4096 comfortably holds a thorough multi-section briefing plus
+            # source URLs; caps runaway output if Claude tries to summarise
+            # every search hit.
+            max_tokens=4096,
+            # 2 focused searches covers overview + news/culture for most
+            # companies. Each additional search pulls another full page of
+            # raw HTML into the next model turn as input tokens — this is
+            # the dominant cost of the whole call, so halving searches
+            # roughly halves the bill. Bumping back to 3 is reasonable if
+            # quality suffers on obscure companies.
+            max_searches=2,
         )
-        .on_conflict_do_update(
-            index_elements=[CompanyResearchCache.company_name],
-            set_={
-                "research_data": research_data,
-                "cached_at": now,
-                "expires_at": expires_at,
-            },
-        )
-        .returning(CompanyResearchCache)
-    )
-    result = await db.execute(stmt)
-    row = result.scalar_one()
-    await db.commit()
 
-    return _to_out(row, fresh=True)
+        # Belt-and-braces: despite the "no preamble" instruction, Claude
+        # sometimes narrates progress in the final text block ("Based on my
+        # searches, I now have enough information…") before emitting the
+        # OVERVIEW header. Drop everything before the first OVERVIEW line so
+        # the cached briefing starts cleanly. If OVERVIEW isn't present at
+        # all (sparse-data fallback), leave the text untouched.
+        overview_match = re.search(r"^OVERVIEW\s*$", briefing, re.MULTILINE)
+        if overview_match:
+            briefing = briefing[overview_match.start() :].rstrip()
+
+        expires_at = now + CACHE_TTL
+        research_data = {"briefing": briefing, "sources": sources}
+
+        # Upsert on company_name (unique index). ON CONFLICT lets us avoid a
+        # select-then-update round trip and handles the race where two users
+        # refresh the same company simultaneously — last writer wins, both
+        # get fresh data on their respective responses.
+        stmt = (
+            pg_insert(CompanyResearchCache)
+            .values(
+                company_name=normalized,
+                research_data=research_data,
+                cached_at=now,
+                expires_at=expires_at,
+            )
+            .on_conflict_do_update(
+                index_elements=[CompanyResearchCache.company_name],
+                set_={
+                    "research_data": research_data,
+                    "cached_at": now,
+                    "expires_at": expires_at,
+                },
+            )
+            .returning(CompanyResearchCache)
+        )
+        result = await db.execute(stmt)
+        row = result.scalar_one()
+        await db.commit()
+
+        return _to_out(row, fresh=True)
+    except Exception:
+        await refund(db, user, "company_research")
+        raise

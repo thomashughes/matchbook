@@ -34,9 +34,49 @@ interface RequestOptions {
 
 export class ApiError extends Error {
   // status lets callers render 401/403/429 UI differently from a 500.
-  constructor(public status: number, public detail: string) {
+  // data holds the full backend detail payload when it's an object,
+  // which 402 quota responses always are. For string-detail errors
+  // (most 4xx/5xx) data is null and `detail` is the user-facing
+  // message.
+  constructor(
+    public status: number,
+    public detail: string,
+    public data: unknown = null,
+  ) {
     super(detail);
   }
+}
+
+/**
+ * Shape of the 402 body emitted by backend QuotaExceeded.
+ *
+ * Mirrored from `core/entitlements.py: QuotaExceeded.__init__`. Keep
+ * in sync if the backend field names change.
+ */
+export interface QuotaErrorDetail {
+  error: 'quota_exceeded';
+  resource: string;
+  limit: number;
+  used: number;
+  resets_at: string;
+  upgrade_url: string;
+}
+
+/**
+ * Narrow an ApiError to a quota-exceeded error. UI components use
+ * this to decide whether to render an upgrade CTA vs a generic
+ * error toast.
+ */
+export function isQuotaError(
+  err: unknown,
+): err is ApiError & { data: QuotaErrorDetail } {
+  return (
+    err instanceof ApiError &&
+    err.status === 402 &&
+    typeof err.data === 'object' &&
+    err.data !== null &&
+    (err.data as { error?: unknown }).error === 'quota_exceeded'
+  );
 }
 
 async function rawFetch(path: string, opts: RequestOptions, token: string | null): Promise<Response> {
@@ -78,16 +118,33 @@ export async function api<T = unknown>(path: string, opts: RequestOptions = {}):
   }
 
   if (!res.ok) {
-    // The backend returns { detail: string } on errors (FastAPI default).
-    // Fall back to statusText when the body isn't JSON (rare).
+    // FastAPI returns { detail: string | object }. For most errors it's
+    // a string ("Not found", "Not authenticated"). For 402 quota errors
+    // the detail is an object carrying resource/limit/used/resets_at so
+    // the UI can render a proper upgrade CTA. We preserve both: `detail`
+    // is always a string for .message display, `data` is the full object
+    // when present.
     let detail = res.statusText;
+    let data: unknown = null;
     try {
-      const data = (await res.json()) as { detail?: string };
-      if (data?.detail) detail = data.detail;
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body?.detail === 'string') {
+        detail = body.detail;
+      } else if (body?.detail && typeof body.detail === 'object') {
+        data = body.detail;
+        // Synthesise a human-readable message from the structured data
+        // so callers that only look at .message still get something
+        // useful to show.
+        const d = body.detail as { error?: string; resource?: string };
+        detail =
+          d.error === 'quota_exceeded' && d.resource
+            ? `Quota exceeded for ${d.resource}.`
+            : JSON.stringify(body.detail);
+      }
     } catch {
       /* non-JSON body — use statusText */
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, data);
   }
 
   // 204 No Content has no body to parse.

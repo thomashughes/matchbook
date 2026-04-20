@@ -89,6 +89,25 @@ class Settings(BaseSettings):
     # write in a .env by hand.
     CORS_ORIGINS: str = "http://localhost:3085"
 
+    # --- Stripe billing ----------------------------------------------------
+    # Secret key for the Stripe SDK. 'sk_test_...' in dev/test mode, 'sk_live_...'
+    # in production. Empty string disables billing routes gracefully — the
+    # feature is optional at app boot (dev environments without Stripe can
+    # still run the rest of the API).
+    STRIPE_SECRET_KEY: str = ""
+    # Webhook signing secret ('whsec_...') — every incoming webhook is verified
+    # against this. Missing secret = webhook endpoint rejects every request
+    # with 400, which is the correct fail-closed behaviour.
+    STRIPE_WEBHOOK_SECRET: str = ""
+    # Price ID of the £7.99/mo recurring subscription product. Created in the
+    # Stripe dashboard; we never create prices at runtime.
+    STRIPE_PRICE_ID: str = ""
+    # Where Stripe redirects after Checkout completes or is cancelled. Use
+    # absolute URLs on the user-facing frontend — these land in the browser
+    # bar, not in the API.
+    BILLING_SUCCESS_URL: str = "http://localhost:3085/billing?status=success"
+    BILLING_CANCEL_URL: str = "http://localhost:3085/billing?status=cancel"
+
     # --- Security knobs ----------------------------------------------------
     # bcrypt cost factor. 12 is the spec minimum (~250ms/hash on modern
     # hardware — slow enough to resist offline brute force, fast enough to

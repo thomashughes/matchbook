@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import ai_outputs as ai_outputs_routes
 from app.api.routes import auth as auth_routes
+from app.api.routes import billing as billing_routes
 from app.api.routes import company_research as company_research_routes
 from app.api.routes import cover_letters as cover_letters_routes
 from app.api.routes import jobs as jobs_routes
@@ -62,6 +63,7 @@ app.include_router(jobs_routes.router, prefix=API_V1)
 app.include_router(cover_letters_routes.router, prefix=API_V1)
 app.include_router(ai_outputs_routes.router, prefix=API_V1)
 app.include_router(company_research_routes.router, prefix=API_V1)
+app.include_router(billing_routes.router, prefix=API_V1)
 
 
 @app.exception_handler(RequestValidationError)

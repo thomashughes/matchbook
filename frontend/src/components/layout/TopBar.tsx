@@ -4,6 +4,7 @@
  */
 import { Plus } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
+import { UsagePill } from './UsagePill';
 
 export function TopBar({ onQuickAdd }: { onQuickAdd: () => void }) {
   const user = useAuthStore((s) => s.user);
@@ -16,6 +17,10 @@ export function TopBar({ onQuickAdd }: { onQuickAdd: () => void }) {
     >
       <div />
       <div className="flex items-center gap-3">
+        {/* UsagePill sits to the left of Add Job so "X of Y jobs" is the
+            first thing the user sees when their eye travels to the
+            creation action. Clicking it goes to /billing. */}
+        <UsagePill />
         <button className="mb-btn-primary !py-2" onClick={onQuickAdd}>
           <Plus size={16} />
           Add job

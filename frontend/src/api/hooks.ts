@@ -15,6 +15,7 @@ import { api, ApiError } from './client';
 import { uploadFile } from './upload';
 import type {
   AIOutputKind,
+  BillingStatus,
   CompanyResearch,
   CoverLetter,
   FollowUpChannel,
@@ -94,7 +95,12 @@ export function useCreateJob() {
       title?: string;
       company?: string;
     }) => api<JobDetail>('/jobs', { method: 'POST', body }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      // jobs_created is a per-user counter — refresh the dashboard pill
+      // so the "X of Y jobs this month" reading updates after creation.
+      qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+    },
   });
 }
 
@@ -102,7 +108,10 @@ export function useCreateJobFromPdf() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (file: File) => uploadFile<JobDetail>('/jobs/from-pdf', file),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+    },
   });
 }
 
@@ -144,8 +153,12 @@ export function useGenerateCoverLetter(jobId: string) {
         method: 'POST',
         body,
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ['jobs', 'detail', jobId, 'cover-letters'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobs', 'detail', jobId, 'cover-letters'] });
+      // Per-job quota lives on JobDetail; refresh it so the button
+      // caption ("2 cover letters left this month") re-renders.
+      qc.invalidateQueries({ queryKey: ['jobs', 'detail', jobId] });
+    },
   });
 }
 
@@ -182,6 +195,15 @@ export function useDeleteAIOutput(jobId: string, kind: AIOutputKind) {
   });
 }
 
+// Shared helper: every per-job generation needs to refresh both the
+// output-list query (the new draft appears) and the JobDetail query
+// (its quota block reflects one-less credit). Factored out to avoid
+// four identical 2-line onSuccess blocks below.
+function invalidateAfterJobAI(qc: ReturnType<typeof useQueryClient>, jobId: string, kind: AIOutputKind) {
+  qc.invalidateQueries({ queryKey: ['jobs', 'detail', jobId, 'ai-outputs', kind] });
+  qc.invalidateQueries({ queryKey: ['jobs', 'detail', jobId] });
+}
+
 export function useGenerateOutreach(jobId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -194,10 +216,7 @@ export function useGenerateOutreach(jobId: string) {
         method: 'POST',
         body,
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({
-        queryKey: ['jobs', 'detail', jobId, 'ai-outputs', 'outreach'],
-      }),
+    onSuccess: () => invalidateAfterJobAI(qc, jobId, 'outreach'),
   });
 }
 
@@ -213,10 +232,7 @@ export function useGenerateFormResponse(jobId: string) {
         method: 'POST',
         body,
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({
-        queryKey: ['jobs', 'detail', jobId, 'ai-outputs', 'form_response'],
-      }),
+    onSuccess: () => invalidateAfterJobAI(qc, jobId, 'form_response'),
   });
 }
 
@@ -236,10 +252,7 @@ export function useGenerateFollowUp(jobId: string) {
         method: 'POST',
         body,
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({
-        queryKey: ['jobs', 'detail', jobId, 'ai-outputs', 'follow_up'],
-      }),
+    onSuccess: () => invalidateAfterJobAI(qc, jobId, 'follow_up'),
   });
 }
 
@@ -257,10 +270,7 @@ export function useGenerateInterviewPrep(jobId: string) {
         method: 'POST',
         body,
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({
-        queryKey: ['jobs', 'detail', jobId, 'ai-outputs', 'interview_prep'],
-      }),
+    onSuccess: () => invalidateAfterJobAI(qc, jobId, 'interview_prep'),
   });
 }
 
@@ -304,6 +314,58 @@ export function useGenerateCompanyResearch(jobId: string) {
         ['jobs', 'detail', jobId, 'company-research'],
         data,
       );
+      // company_research is a per-user counter — refresh the pill.
+      qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+    },
+  });
+}
+
+// --- Billing --------------------------------------------------------------
+
+/**
+ * Plan + usage snapshot. Dashboard pill and /billing page both read
+ * from here. Refetched automatically after generation mutations so
+ * the "X of Y used" counter stays accurate without a page reload.
+ *
+ * staleTime is short (not zero) so navigating between pages within a
+ * few seconds doesn't re-fire the query; long enough to feel snappy,
+ * short enough that returning to /billing after upgrading shows the
+ * flipped plan.
+ */
+export function useBillingStatus() {
+  return useQuery({
+    queryKey: ['billing', 'status'],
+    queryFn: () => api<BillingStatus>('/billing/status'),
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * Start a Stripe Checkout session and redirect the browser to it.
+ * The hook returns the mutation so callers can show a loading state
+ * on the upgrade button; the actual redirect happens inside onSuccess
+ * to keep the logic colocated with the only code path that uses it.
+ */
+export function useCreateCheckout() {
+  return useMutation({
+    mutationFn: () =>
+      api<{ url: string }>('/billing/checkout', { method: 'POST' }),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+  });
+}
+
+/**
+ * Open the Stripe Customer Portal for the current user. Same redirect
+ * pattern as checkout.
+ */
+export function useOpenBillingPortal() {
+  return useMutation({
+    mutationFn: () =>
+      api<{ url: string }>('/billing/portal', { method: 'POST' }),
+    onSuccess: (data) => {
+      window.location.href = data.url;
     },
   });
 }

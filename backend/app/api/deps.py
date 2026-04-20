@@ -8,13 +8,15 @@ copying logic into each route) means an auth bug has exactly one place
 to live.
 """
 
+from typing import Callable
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Path, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.entitlements import consume
 from app.core.rate_limit import LIMIT_AUTH_UNAUTH, check_rate_limit
 from app.core.security import ACCESS_TYPE, TokenError, decode_token
 from app.models.user import User
@@ -89,6 +91,56 @@ async def rate_limit_cv_upload(user: User = Depends(get_current_user)) -> None:
     cap prevents both cost runaway and disk abuse."""
     from app.core.rate_limit import LIMIT_CV_UPLOAD, check_rate_limit
     await check_rate_limit(str(user.id), LIMIT_CV_UPLOAD)
+
+
+def entitlement(resource: str, scope: str = "user") -> Callable:
+    """Build a FastAPI dependency that consumes one unit of `resource`.
+
+    Usage:
+        @router.post(..., dependencies=[Depends(entitlement("jobs_created"))])
+        @router.post(..., dependencies=[Depends(entitlement("draft_outreach", "job"))])
+
+    Why a factory: we need per-route parameterisation (resource name,
+    scope) but FastAPI deps are functions. Closing over the args gives
+    each route its own dep identity so FastAPI doesn't cache across
+    routes unexpectedly.
+
+    Scope semantics:
+        - 'user': scope_key is NULL, counter is per-user-per-month.
+        - 'job':  scope_key is the {job_id} path parameter. If the path
+          doesn't contain {job_id} FastAPI's Path() resolver raises
+          422, so a misconfiguration fails at the first request.
+
+    Raises 402 QuotaExceeded if the user is over their plan limit for
+    this resource. The route NEVER sees a successful entitlement without
+    the counter having been incremented — consume() commits eagerly.
+
+    Refund-on-failure: the dep only CONSUMES. Refunding on AI-call
+    failure is the route's responsibility (see the routes themselves
+    for the try/except/refund pattern). Splitting it this way keeps
+    the dep composable — if a future route wants to consume without
+    ever refunding (e.g. an internal ops action), it doesn't inherit
+    refund logic it doesn't need.
+    """
+    if scope not in ("user", "job"):
+        raise ValueError(f"entitlement scope must be 'user' or 'job', got {scope!r}")
+
+    if scope == "user":
+        async def _dep_user(
+            user: User = Depends(get_verified_user),
+            db: AsyncSession = Depends(get_db),
+        ) -> None:
+            await consume(db, user, resource, scope_key=None)
+        return _dep_user
+
+    # scope == "job"
+    async def _dep_job(
+        job_id: UUID = Path(...),
+        user: User = Depends(get_verified_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> None:
+        await consume(db, user, resource, scope_key=job_id)
+    return _dep_job
 
 
 async def get_verified_user(user: User = Depends(get_current_user)) -> User:

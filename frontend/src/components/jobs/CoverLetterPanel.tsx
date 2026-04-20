@@ -25,6 +25,7 @@ import {
   useGenerateCoverLetter,
 } from '@/api/hooks';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { QuotaCaption } from './QuotaCaption';
 
 type Tone = 'formal' | 'conversational';
 type Length = 'short' | 'standard' | 'detailed';
@@ -112,6 +113,7 @@ export function CoverLetterPanel({ jobId }: { jobId: string }) {
                 ? 'Generate'
                 : 'Generate another'}
           </button>
+          <QuotaCaption jobId={jobId} resource="cover_letter" />
         </div>
       </div>
 

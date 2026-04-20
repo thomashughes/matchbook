@@ -34,6 +34,7 @@ import {
 } from '@/api/hooks';
 import type { InterviewPrepRound, JobAIOutput } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { QuotaCaption } from './QuotaCaption';
 
 const ROUNDS: { value: InterviewPrepRound; label: string }[] = [
   { value: 'phone_screen', label: 'Phone screen' },
@@ -105,6 +106,7 @@ export function InterviewPrepPanel({ jobId }: { jobId: string }) {
                 ? 'Generate prep sheet'
                 : 'Generate another'}
           </button>
+          <QuotaCaption jobId={jobId} resource="draft_interview_prep" />
         </div>
       </div>
 

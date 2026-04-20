@@ -119,6 +119,37 @@ export interface CoverLetter {
   created_at: string;
 }
 
+/**
+ * Every resource that the entitlement system tracks.
+ *
+ * Kept as a union literal (not string) so the UI can pattern-match
+ * exhaustively and the compiler catches missed cases when new
+ * resources are added. Must match the keys in backend
+ * `app/core/entitlements.py: RESOURCES`.
+ */
+export type EntitlementResource =
+  | 'jobs_created'
+  | 'company_research'
+  | 'draft_outreach'
+  | 'draft_form_response'
+  | 'draft_follow_up'
+  | 'draft_interview_prep'
+  | 'cover_letter'
+  | 'ai_job_search';
+
+/**
+ * One row of the per-job quota block on JobDetail and the per-user
+ * usage array on BillingStatus. `limit` + `remaining` are null when
+ * the plan grants unlimited use (grandfathered accounts).
+ */
+export interface QuotaItem {
+  resource: EntitlementResource;
+  limit: number | null;
+  used: number;
+  remaining: number | null;
+  resets_at: string;
+}
+
 export interface JobDetail {
   id: string;
   title: string;
@@ -135,4 +166,19 @@ export interface JobDetail {
   created_at: string;
   updated_at: string;
   score: JobScore | null;
+  // Present on GET/PATCH responses. create_job returns [] to avoid a
+  // second DB query — the next GET will fill it.
+  quota: QuotaItem[];
+}
+
+// --- Billing --------------------------------------------------------------
+
+export type Plan = 'free' | 'paid' | 'paid_grandfathered';
+
+export interface BillingStatus {
+  plan: Plan;
+  subscription_status: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  usage: QuotaItem[];
 }

@@ -17,8 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_verified_user, rate_limit_ai
+from app.api.deps import entitlement, get_verified_user, rate_limit_ai
 from app.core.database import get_db
+from app.core.entitlements import refund
 from app.models.job import Job
 from app.models.job_ai_output import JobAIOutput
 from app.models.profile import Profile
@@ -140,7 +141,13 @@ async def remove(
     "/outreach",
     response_model=JobAIOutputOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(rate_limit_ai)],
+    # entitlement scope='job' pulls {job_id} from the path and keys the
+    # counter per-job so each job has its own 3/10-drafts cap for this
+    # kind. Burst limit applies first, quota second.
+    dependencies=[
+        Depends(rate_limit_ai),
+        Depends(entitlement("draft_outreach", "job")),
+    ],
 )
 async def generate_outreach(
     job_id: UUID,
@@ -149,48 +156,55 @@ async def generate_outreach(
     db: AsyncSession = Depends(get_db),
 ) -> JobAIOutputOut:
     """Generate a new outreach message version."""
-    job = await _own_job(job_id, user, db)
-    profile = await _require_profile(user, db)
+    try:
+        job = await _own_job(job_id, user, db)
+        profile = await _require_profile(user, db)
 
-    content = await complete_text(
-        system=outreach_prompt.SYSTEM,
-        user=outreach_prompt.build_user_message(
-            profile.structured_data,
-            job.description_raw,
-            channel=body.channel,
-            recipient_role=body.recipient_role,
-            recipient_name=body.recipient_name,
-            company=job.company,
-            title=job.title,
-        ),
-        # Outreach is short; 1024 is plenty and caps runaway drafts.
-        max_tokens=1024,
-    )
+        content = await complete_text(
+            system=outreach_prompt.SYSTEM,
+            user=outreach_prompt.build_user_message(
+                profile.structured_data,
+                job.description_raw,
+                channel=body.channel,
+                recipient_role=body.recipient_role,
+                recipient_name=body.recipient_name,
+                company=job.company,
+                title=job.title,
+            ),
+            # Outreach is short; 1024 is plenty and caps runaway drafts.
+            max_tokens=1024,
+        )
 
-    next_version = await _next_version(db, job.id, "outreach")
-    row = JobAIOutput(
-        job_id=job.id,
-        user_id=user.id,
-        kind="outreach",
-        content=content,
-        params={
-            "channel": body.channel,
-            "recipient_role": body.recipient_role,
-            "recipient_name": body.recipient_name,
-        },
-        version=next_version,
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-    return _out(row)
+        next_version = await _next_version(db, job.id, "outreach")
+        row = JobAIOutput(
+            job_id=job.id,
+            user_id=user.id,
+            kind="outreach",
+            content=content,
+            params={
+                "channel": body.channel,
+                "recipient_role": body.recipient_role,
+                "recipient_name": body.recipient_name,
+            },
+            version=next_version,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return _out(row)
+    except Exception:
+        await refund(db, user, "draft_outreach", scope_key=job_id)
+        raise
 
 
 @router.post(
     "/form-response",
     response_model=JobAIOutputOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(rate_limit_ai)],
+    dependencies=[
+        Depends(rate_limit_ai),
+        Depends(entitlement("draft_form_response", "job")),
+    ],
 )
 async def generate_form_response(
     job_id: UUID,
@@ -199,53 +213,60 @@ async def generate_form_response(
     db: AsyncSession = Depends(get_db),
 ) -> JobAIOutputOut:
     """Generate a tailored answer to one application-form question."""
-    job = await _own_job(job_id, user, db)
-    profile = await _require_profile(user, db)
+    try:
+        job = await _own_job(job_id, user, db)
+        profile = await _require_profile(user, db)
 
-    content = await complete_text(
-        system=form_response_prompt.SYSTEM,
-        user=form_response_prompt.build_user_message(
-            profile.structured_data,
-            job.description_raw,
-            question=body.question,
-            max_words=body.max_words,
-            company=job.company,
-            title=job.title,
-        ),
-        # 1536 comfortably holds a STAR answer (~400 words ≈ 600 tokens)
-        # with headroom for the occasional longer essay prompt, while
-        # still capping runaway drafts. Word-cap enforcement is soft —
-        # Claude usually obeys the SYSTEM instruction but we don't hard-
-        # truncate server-side; the user is in control of the edit.
-        max_tokens=1536,
-    )
+        content = await complete_text(
+            system=form_response_prompt.SYSTEM,
+            user=form_response_prompt.build_user_message(
+                profile.structured_data,
+                job.description_raw,
+                question=body.question,
+                max_words=body.max_words,
+                company=job.company,
+                title=job.title,
+            ),
+            # 1536 comfortably holds a STAR answer (~400 words ≈ 600 tokens)
+            # with headroom for the occasional longer essay prompt, while
+            # still capping runaway drafts. Word-cap enforcement is soft —
+            # Claude usually obeys the SYSTEM instruction but we don't hard-
+            # truncate server-side; the user is in control of the edit.
+            max_tokens=1536,
+        )
 
-    next_version = await _next_version(db, job.id, "form_response")
-    row = JobAIOutput(
-        job_id=job.id,
-        user_id=user.id,
-        kind="form_response",
-        content=content,
-        # Store the exact question + cap the user submitted so each
-        # version card can show which question it answered (critical
-        # context once there are 3+ questions-worth of drafts).
-        params={
-            "question": body.question,
-            "max_words": body.max_words,
-        },
-        version=next_version,
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-    return _out(row)
+        next_version = await _next_version(db, job.id, "form_response")
+        row = JobAIOutput(
+            job_id=job.id,
+            user_id=user.id,
+            kind="form_response",
+            content=content,
+            # Store the exact question + cap the user submitted so each
+            # version card can show which question it answered (critical
+            # context once there are 3+ questions-worth of drafts).
+            params={
+                "question": body.question,
+                "max_words": body.max_words,
+            },
+            version=next_version,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return _out(row)
+    except Exception:
+        await refund(db, user, "draft_form_response", scope_key=job_id)
+        raise
 
 
 @router.post(
     "/follow-up",
     response_model=JobAIOutputOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(rate_limit_ai)],
+    dependencies=[
+        Depends(rate_limit_ai),
+        Depends(entitlement("draft_follow_up", "job")),
+    ],
 )
 async def generate_follow_up(
     job_id: UUID,
@@ -254,53 +275,60 @@ async def generate_follow_up(
     db: AsyncSession = Depends(get_db),
 ) -> JobAIOutputOut:
     """Generate a new follow-up message version for the given stage."""
-    job = await _own_job(job_id, user, db)
-    profile = await _require_profile(user, db)
+    try:
+        job = await _own_job(job_id, user, db)
+        profile = await _require_profile(user, db)
 
-    content = await complete_text(
-        system=follow_up_prompt.SYSTEM,
-        user=follow_up_prompt.build_user_message(
-            profile.structured_data,
-            job.description_raw,
-            stage=body.stage,
-            channel=body.channel,
-            context=body.context,
-            company=job.company,
-            title=job.title,
-        ),
-        # Follow-ups are shorter than cover letters and typically
-        # shorter than outreach — 1024 is plenty and caps runaway
-        # drafts if Claude decides to over-explain.
-        max_tokens=1024,
-    )
+        content = await complete_text(
+            system=follow_up_prompt.SYSTEM,
+            user=follow_up_prompt.build_user_message(
+                profile.structured_data,
+                job.description_raw,
+                stage=body.stage,
+                channel=body.channel,
+                context=body.context,
+                company=job.company,
+                title=job.title,
+            ),
+            # Follow-ups are shorter than cover letters and typically
+            # shorter than outreach — 1024 is plenty and caps runaway
+            # drafts if Claude decides to over-explain.
+            max_tokens=1024,
+        )
 
-    next_version = await _next_version(db, job.id, "follow_up")
-    row = JobAIOutput(
-        job_id=job.id,
-        user_id=user.id,
-        kind="follow_up",
-        content=content,
-        # Persist all three knobs so the version card can show stage +
-        # channel chips, and the user can see (or hover) the original
-        # context snippet that shaped the draft.
-        params={
-            "stage": body.stage,
-            "channel": body.channel,
-            "context": body.context,
-        },
-        version=next_version,
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-    return _out(row)
+        next_version = await _next_version(db, job.id, "follow_up")
+        row = JobAIOutput(
+            job_id=job.id,
+            user_id=user.id,
+            kind="follow_up",
+            content=content,
+            # Persist all three knobs so the version card can show stage +
+            # channel chips, and the user can see (or hover) the original
+            # context snippet that shaped the draft.
+            params={
+                "stage": body.stage,
+                "channel": body.channel,
+                "context": body.context,
+            },
+            version=next_version,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return _out(row)
+    except Exception:
+        await refund(db, user, "draft_follow_up", scope_key=job_id)
+        raise
 
 
 @router.post(
     "/interview-prep",
     response_model=JobAIOutputOut,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(rate_limit_ai)],
+    dependencies=[
+        Depends(rate_limit_ai),
+        Depends(entitlement("draft_interview_prep", "job")),
+    ],
 )
 async def generate_interview_prep(
     job_id: UUID,
@@ -309,39 +337,43 @@ async def generate_interview_prep(
     db: AsyncSession = Depends(get_db),
 ) -> JobAIOutputOut:
     """Generate a new interview-prep sheet version for the given round."""
-    job = await _own_job(job_id, user, db)
-    profile = await _require_profile(user, db)
+    try:
+        job = await _own_job(job_id, user, db)
+        profile = await _require_profile(user, db)
 
-    content = await complete_text(
-        system=interview_prep_prompt.SYSTEM,
-        user=interview_prep_prompt.build_user_message(
-            profile.structured_data,
-            job.description_raw,
-            round=body.round,
-            focus=body.focus,
-            company=job.company,
-            title=job.title,
-        ),
-        # Interview prep is the longest of the AI actions — three
-        # sections, ~12–18 items total, each with a hint or STAR
-        # anchor. 2048 comfortably holds a thorough sheet while still
-        # capping runaway output.
-        max_tokens=2048,
-    )
+        content = await complete_text(
+            system=interview_prep_prompt.SYSTEM,
+            user=interview_prep_prompt.build_user_message(
+                profile.structured_data,
+                job.description_raw,
+                round=body.round,
+                focus=body.focus,
+                company=job.company,
+                title=job.title,
+            ),
+            # Interview prep is the longest of the AI actions — three
+            # sections, ~12–18 items total, each with a hint or STAR
+            # anchor. 2048 comfortably holds a thorough sheet while still
+            # capping runaway output.
+            max_tokens=2048,
+        )
 
-    next_version = await _next_version(db, job.id, "interview_prep")
-    row = JobAIOutput(
-        job_id=job.id,
-        user_id=user.id,
-        kind="interview_prep",
-        content=content,
-        params={
-            "round": body.round,
-            "focus": body.focus,
-        },
-        version=next_version,
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-    return _out(row)
+        next_version = await _next_version(db, job.id, "interview_prep")
+        row = JobAIOutput(
+            job_id=job.id,
+            user_id=user.id,
+            kind="interview_prep",
+            content=content,
+            params={
+                "round": body.round,
+                "focus": body.focus,
+            },
+            version=next_version,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return _out(row)
+    except Exception:
+        await refund(db, user, "draft_interview_prep", scope_key=job_id)
+        raise

@@ -100,6 +100,13 @@ services:
       FRONTEND_URL: ${FRONTEND_URL}
       CORS_ORIGINS: ${CORS_ORIGINS}
       ENVIRONMENT: ${ENVIRONMENT}
+      # Stripe billing — optional in dev. Empty values make billing routes
+      # return 503; everything else works fine without them.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID:-}
+      BILLING_SUCCESS_URL: ${BILLING_SUCCESS_URL:-http://localhost:3085/billing?status=success}
+      BILLING_CANCEL_URL: ${BILLING_CANCEL_URL:-http://localhost:3085/billing?status=cancel}
     volumes:
       # Uploaded CVs and job files — stored on a named volume *outside* the
       # web root (the frontend container has no access) so they can never

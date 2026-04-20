@@ -34,6 +34,7 @@ import {
 } from '@/api/hooks';
 import type { CompanyResearch } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { UserQuotaCaption } from './UserQuotaCaption';
 
 export function CompanyResearchPanel({
   jobId,
@@ -117,6 +118,7 @@ export function CompanyResearchPanel({
             <Globe size={14} />
             Research company
           </button>
+          <UserQuotaCaption resource="company_research" />
         </div>
       )}
 

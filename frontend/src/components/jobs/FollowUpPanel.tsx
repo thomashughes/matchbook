@@ -27,6 +27,7 @@ import type {
   JobAIOutput,
 } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { QuotaCaption } from './QuotaCaption';
 
 const STAGES: { value: FollowUpStage; label: string }[] = [
   { value: 'post_application', label: 'After applying' },
@@ -124,6 +125,7 @@ export function FollowUpPanel({ jobId }: { jobId: string }) {
                 ? 'Draft follow-up'
                 : 'Draft another'}
           </button>
+          <QuotaCaption jobId={jobId} resource="draft_follow_up" />
         </div>
       </div>
 

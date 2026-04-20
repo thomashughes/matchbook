@@ -9,7 +9,9 @@ Tenancy note:
     filter at the ORM/dependency layer too, belt-and-braces.
 """
 
-from sqlalchemy import Boolean, String, Text
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDPkMixin
@@ -37,3 +39,48 @@ class User(Base, UUIDPkMixin, TimestampMixin):
     # at rest means a DB dump alone can't be used to impersonate users'
     # Google accounts — the FERNET_KEY is required and lives only in env.
     google_calendar_credentials: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Billing / entitlement plan. One of: 'free' | 'paid' | 'paid_grandfathered'.
+    # 'paid_grandfathered' is an admin-level override used for the developer
+    # account — unlimited on every resource regardless of Stripe state.
+    # Stored as VARCHAR (not a DB ENUM) so adding future tiers doesn't need
+    # an Alembic type migration.
+    plan: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="free", server_default="free"
+    )
+
+    # Stripe customer record for this user. Populated on first Checkout
+    # session creation. Kept after subscription cancellation so a returning
+    # user reuses their Stripe customer (consolidates invoices + cards).
+    stripe_customer_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
+
+    # Stripe subscription the user currently has (if any). Cleared when
+    # the subscription is deleted. NULL for free users and for paid users
+    # whose subscription has been canceled + reached period end.
+    stripe_subscription_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True
+    )
+
+    # Mirror of Stripe's subscription.status string — 'active', 'past_due',
+    # 'canceled', 'incomplete_expired', etc. Used to drive UI copy. The
+    # plan column is the authoritative entitlement signal; this is purely
+    # informational.
+    subscription_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # When the current billing period ends. Drives the "cancelling on
+    # <date>" UX and the grace-period cutoff: if cancel_at_period_end is
+    # true, the plan flips to 'free' when this moment passes (via the
+    # subscription.deleted webhook, not a cron — we let Stripe fire it).
+    subscription_current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Set when the user requests cancellation via the Customer Portal.
+    # Until the period ends they keep paid entitlements; after, Stripe
+    # fires subscription.deleted and we flip plan to 'free'. Surfaced to
+    # the frontend so it can display "cancelling on <date>".
+    cancel_at_period_end: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )

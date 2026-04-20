@@ -62,6 +62,21 @@ class JobListItem(BaseModel):
     salary_raw: str | None
 
 
+class JobQuotaItem(BaseModel):
+    """How many of each per-job AI action the user has left this month.
+
+    `limit = None` + `remaining = None` means unlimited (grandfathered
+    account). The UI shows "Unlimited" and never a progress bar in
+    that case.
+    """
+
+    resource: str
+    limit: int | None
+    used: int
+    remaining: int | None
+    resets_at: datetime
+
+
 class JobDetailOut(BaseModel):
     id: UUID
     title: str
@@ -78,6 +93,13 @@ class JobDetailOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     score: JobScoreOut | None
+    # Per-kind remaining counts for the five per-job resources
+    # (draft_*, cover_letter). Present on every JobDetailOut so every
+    # surface that renders a job has the data it needs to caption its
+    # generate buttons. An empty list is a valid "I didn't compute
+    # quotas for this response" signal — used by create_job to avoid
+    # an extra query on the freshly-created row.
+    quota: list[JobQuotaItem] = []
 
 
 class CompareOut(BaseModel):
