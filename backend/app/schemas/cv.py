@@ -36,6 +36,22 @@ class Phase2Answer(BaseModel):
     answer: str
 
 
+class CvContact(BaseModel):
+    """Structured contact information collected alongside Phase-1
+    answers. Each field is optional — the candidate can skip any line.
+    Only fields with non-empty values are sent to Claude and rendered
+    in the finished CV. The set is fixed in the frontend form
+    (email/phone/location/linkedin/github/portfolio) — Claude does not
+    ask about these separately."""
+
+    email: str | None = None
+    phone: str | None = None
+    location: str | None = None
+    linkedin: str | None = None
+    github: str | None = None
+    portfolio: str | None = None
+
+
 class Phase2In(BaseModel):
     """Body for POST /cv/phase-two.
 
@@ -51,6 +67,7 @@ class Phase2In(BaseModel):
     tone: Tone = "professional"
     extra_notes: str = ""
     regenerate_reason: str | None = None
+    contact: CvContact | None = None
 
 
 class CvVersionOut(BaseModel):

@@ -508,3 +508,22 @@ export function useDeleteCvVersion() {
     },
   });
 }
+
+/**
+ * Re-parse a chosen CV version and refresh the user's profile typed
+ * fields (seniority, skills, salary, …) using the existing onboarding
+ * answers. Bumps users.profile_version so jobs + cover letters show
+ * stale banners until re-scored / regenerated.
+ */
+export function useRebuildProfileFromCv() {
+  const qc = useQueryClient();
+  return useMutation<Profile, Error, string>({
+    mutationFn: (cvId) =>
+      api<Profile>(`/cv/${cvId}/rebuild-profile`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['profile'] });
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      qc.invalidateQueries({ queryKey: ['cv'] });
+    },
+  });
+}

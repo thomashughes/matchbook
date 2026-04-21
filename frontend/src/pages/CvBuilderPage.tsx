@@ -1,30 +1,34 @@
 /**
- * /cv — CV builder: generate, edit, export.
+ * /cv — CV builder. Generate, review, download, regenerate.
  *
- * Four UI states:
- *   1. Locked — free tier sees the feature gated behind the upgrade CTA.
- *   2. Questions — Claude's 8-12 clarifying questions plus the tone
- *                  picker and an "Anything else?" free-text field.
- *   3. Generating — spinner while Phase 2 runs on the server.
- *   4. Editor — split source/preview view with a version sidebar.
+ * The user never edits the markdown directly. The output is a finished
+ * CV they grab and send. Flow:
+ *   1. Idle → Start → Phase 1 (Claude's clarifying questions + the
+ *      contact-info picker with skip toggles per field).
+ *   2. Generating → spinner + hallucination warning.
+ *   3. Preview → full-fidelity PDF embedded in an iframe, identical to
+ *      the download. Post-preview: "How does this CV look?" with a
+ *      regenerate path if they want changes, and a "Rebuild profile
+ *      from this CV" button that re-parses the CV into the user's
+ *      typed profile fields.
+ *
+ * Versions are collapsible cards (mirrors the cover-letter panel UX).
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  ArrowUp,
   Check,
-  Copy,
+  ChevronDown,
   Download,
-  FileDown,
   FileText,
-  Info,
   Loader2,
+  RefreshCw,
   Sparkles,
   Trash2,
+  UserCog,
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAuthStore } from '@/stores/auth';
 import {
   useBillingStatus,
   useCvPhaseOne,
@@ -33,7 +37,7 @@ import {
   useCvVersions,
   useDeleteCvVersion,
   useProfile,
-  useUpdateCvVersion,
+  useRebuildProfileFromCv,
 } from '@/api/hooks';
 import type {
   CvAnswer,
@@ -42,20 +46,45 @@ import type {
   CvVersion,
 } from '@/types/models';
 
-function wordCount(markdown: string): number {
-  const cleaned = markdown
-    .replace(/\[(?:VERIFY|REWRITE)\s*:\s*[^\]]*\]/gi, '')
-    .trim();
-  if (!cleaned) return 0;
-  return cleaned.split(/\s+/).length;
+// --- Contact-info form config --------------------------------------------
+
+// Fixed set of contact fields shown to every candidate. The frontend
+// owns this rather than Claude, so users always see the same choices
+// in the same order, with consistent validation + skip toggles.
+type ContactKey =
+  | 'email'
+  | 'phone'
+  | 'location'
+  | 'linkedin'
+  | 'github'
+  | 'portfolio';
+
+const CONTACT_FIELDS: Array<{
+  key: ContactKey;
+  label: string;
+  placeholder: string;
+}> = [
+  { key: 'email', label: 'Email', placeholder: 'you@example.co.uk' },
+  { key: 'phone', label: 'Phone', placeholder: '+44 7700 900000' },
+  { key: 'location', label: 'Location', placeholder: 'London, UK' },
+  {
+    key: 'linkedin',
+    label: 'LinkedIn',
+    placeholder: 'linkedin.com/in/jane-doe',
+  },
+  { key: 'github', label: 'GitHub', placeholder: 'github.com/jane-doe' },
+  { key: 'portfolio', label: 'Portfolio', placeholder: 'janedoe.com' },
+];
+
+type ContactState = Record<ContactKey, { value: string; include: boolean }>;
+
+function blankContact(): ContactState {
+  const obj = {} as ContactState;
+  for (const f of CONTACT_FIELDS) obj[f.key] = { value: '', include: true };
+  return obj;
 }
 
-function pagesEstimate(words: number): number {
-  return Math.max(1, Math.round(words / 400));
-}
-
-const STALE_MESSAGE =
-  'This CV was generated against a previous profile. Regenerate to reflect your latest skills and experience.';
+// --- Page -----------------------------------------------------------------
 
 export function CvBuilderPage() {
   const prof = useProfile();
@@ -64,15 +93,22 @@ export function CvBuilderPage() {
   const versions = useCvVersions();
   const phaseOne = useCvPhaseOne();
   const phaseTwo = useCvPhaseTwo();
+  const nav = useNavigate();
 
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
-  const [phase, setPhase] = useState<'idle' | 'questions' | 'generating' | 'editor'>('idle');
+  const [phase, setPhase] = useState<'idle' | 'questions' | 'generating' | 'preview'>(
+    'idle',
+  );
   const [questions, setQuestions] = useState<CvQuestion[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [extraNotes, setExtraNotes] = useState('');
   const [tone, setTone] = useState<CvTone>('professional');
+  const [contact, setContact] = useState<ContactState>(blankContact());
   const [regenOpen, setRegenOpen] = useState(false);
 
+  // Auto-switch to the preview of the latest version once data loads.
+  // This keeps navigation cheap: returning to /cv drops you straight
+  // into the most recent CV rather than re-showing the Start button.
   useEffect(() => {
     if (
       versions.data &&
@@ -81,7 +117,7 @@ export function CvBuilderPage() {
       phase === 'idle'
     ) {
       setCurrentVersionId(versions.data[0].id);
-      setPhase('editor');
+      setPhase('preview');
     }
   }, [versions.data, currentVersionId, phase]);
 
@@ -107,13 +143,25 @@ export function CvBuilderPage() {
       }
       setAnswers(initial);
       setExtraNotes('');
+      setContact(blankContact());
       setPhase('questions');
     } catch (e) {
       console.error(e);
     }
   }
 
-  async function submitPhaseTwo(regenReason: string | null) {
+  async function submit(regenReason: string | null) {
+    // Build the contact object: only include fields with include=true
+    // AND a non-empty value. Empty-but-included fields are treated as
+    // skipped (Claude will omit them from the finished CV).
+    const contactPayload: Record<string, string> = {};
+    for (const f of CONTACT_FIELDS) {
+      const c = contact[f.key];
+      if (c.include && c.value.trim()) {
+        contactPayload[f.key] = c.value.trim();
+      }
+    }
+
     const body = {
       answers: questions.map<CvAnswer>((q) => ({
         id: q.id,
@@ -123,12 +171,18 @@ export function CvBuilderPage() {
       tone,
       extra_notes: extraNotes,
       regenerate_reason: regenReason,
+      // Only include the contact object when at least one field was
+      // provided. An empty object would make Claude think we're
+      // deliberately producing a CV with no contact details.
+      ...(Object.keys(contactPayload).length > 0
+        ? { contact: contactPayload }
+        : {}),
     };
     setPhase('generating');
     try {
-      const row = await phaseTwo.mutateAsync(body);
+      const row = await phaseTwo.mutateAsync(body as Parameters<typeof phaseTwo.mutateAsync>[0]);
       setCurrentVersionId(row.id);
-      setPhase('editor');
+      setPhase('preview');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (e) {
       setPhase('questions');
@@ -154,13 +208,13 @@ export function CvBuilderPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-7 py-8">
-      <div className="flex items-start justify-between mb-6">
+    <div className="max-w-5xl mx-auto px-7 py-8 space-y-6">
+      <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-ink">CV builder</h1>
           <p className="text-sm text-ink-muted mt-1">
-            Craft a tailored, hallucination-checked CV from your profile
-            and answers.{' '}
+            A tailored CV, written from your profile and your answers —
+            ready to download.{' '}
             {planAllowsCv && (
               <>
                 Limit: <strong>2 generations per billing cycle</strong>.
@@ -192,6 +246,7 @@ export function CvBuilderPage() {
         </div>
       )}
 
+      {/* Start */}
       {planAllowsCv &&
         phase === 'idle' &&
         (versions.data?.length ?? 0) === 0 && (
@@ -203,52 +258,43 @@ export function CvBuilderPage() {
           />
         )}
 
+      {/* Questions */}
       {phase === 'questions' && (
         <QuestionsForm
           questions={questions}
           answers={answers}
           extraNotes={extraNotes}
           tone={tone}
+          contact={contact}
           onAnswerChange={(id, v) => setAnswers((a) => ({ ...a, [id]: v }))}
           onExtraChange={setExtraNotes}
           onToneChange={setTone}
+          onContactValue={(k, v) =>
+            setContact((s) => ({ ...s, [k]: { ...s[k], value: v } }))
+          }
+          onContactSkip={(k, skipped) =>
+            setContact((s) => ({ ...s, [k]: { ...s[k], include: !skipped } }))
+          }
           onCancel={() => setPhase('idle')}
-          onSubmit={() => submitPhaseTwo(null)}
+          onSubmit={() => submit(null)}
           busy={phaseTwo.isPending}
-          error={null}
         />
       )}
 
-      {phase === 'generating' && (
-        <div className="mb-card flex flex-col items-center gap-4 py-12">
-          <Loader2 size={32} className="animate-spin text-teal" />
-          <div className="text-sm text-ink-2">
-            Rewriting your CV — this usually takes 20–40 seconds.
-          </div>
-          <div className="text-xs text-ink-muted text-center max-w-md">
-            When this finishes, carefully review every line. Claude can
-            make mistakes — especially around dates, company names, and
-            numbers. Anything marked <span className="font-mono">[VERIFY]</span>{' '}
-            needs your attention.
-          </div>
-        </div>
-      )}
+      {/* Generating */}
+      {phase === 'generating' && <GeneratingPanel />}
 
-      {phase === 'editor' && current && (
-        <EditorView
+      {/* Preview */}
+      {phase === 'preview' && current && (
+        <PreviewView
           current={current}
           versions={versions.data ?? []}
           currentProfileVersion={prof.data.profile_version}
           canGenerate={canGenerate}
           remaining={remaining ?? 0}
           onSelectVersion={setCurrentVersionId}
-          onRequestRegenerate={() => {
-            if ((versions.data?.length ?? 0) === 0 || questions.length === 0) {
-              void startQuestions();
-            } else {
-              setRegenOpen(true);
-            }
-          }}
+          onRequestRegenerate={() => setRegenOpen(true)}
+          onAfterProfileRebuild={() => nav('/profile')}
         />
       )}
 
@@ -260,13 +306,20 @@ export function CvBuilderPage() {
           onClose={() => setRegenOpen(false)}
           onConfirm={(reason) => {
             setRegenOpen(false);
-            void submitPhaseTwo(reason);
+            if (questions.length === 0) {
+              // No cached phase-1 state — re-fetch questions first,
+              // then let the user update answers (pre-populated where
+              // possible). For v1 we just go through phase-1 again.
+              void startQuestions();
+            } else {
+              void submit(reason);
+            }
           }}
         />
       )}
 
       {phaseTwo.isError && (
-        <div className="mt-4 text-sm text-rust bg-rust-light rounded-lg px-3 py-2">
+        <div className="text-sm text-rust bg-rust-light rounded-lg px-3 py-2">
           Couldn't generate — please try again in a moment. No credit
           was consumed.
         </div>
@@ -274,6 +327,8 @@ export function CvBuilderPage() {
     </div>
   );
 }
+
+// --- Panels ---------------------------------------------------------------
 
 function StartPanel({
   onStart,
@@ -298,24 +353,14 @@ function StartPanel({
         <div className="flex-1">
           <div className="mb-display text-lg mb-1">Let's build your CV</div>
           <p className="text-sm text-ink-2 mb-4">
-            Claude will ask 8–12 targeted questions based on the CV you
-            uploaded. Your answers shape the rewrite. Expect tight,
-            evidence-driven bullets and UK English.
+            Claude will ask 10–14 targeted questions based on your
+            uploaded CV. You'll also pick which contact links to show.
+            The result is a finished CV you can download and send — no
+            editing required.
           </p>
-          <div
-            className="text-xs text-ink-muted rounded-lg px-3 py-2 mb-4 flex items-start gap-2"
-            style={{ background: 'var(--parchment)' }}
-          >
-            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rust" />
-            <div>
-              <strong>Please double-check everything.</strong> Claude can
-              misstate dates, invent metrics, or misremember project
-              scope. Anything marked <span className="font-mono">[VERIFY]</span>{' '}
-              needs your confirmation before sending the CV anywhere.
-            </div>
-          </div>
+          <HallucinationWarning />
           <button
-            className="mb-btn-primary"
+            className="mb-btn-primary mt-4"
             onClick={onStart}
             disabled={!canGenerate || busy}
           >
@@ -336,42 +381,123 @@ function StartPanel({
   );
 }
 
+function HallucinationWarning() {
+  return (
+    <div
+      className="text-xs text-ink-muted rounded-lg px-3 py-2 flex items-start gap-2"
+      style={{ background: 'var(--parchment)' }}
+    >
+      <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rust" />
+      <div>
+        <strong>Claude can make mistakes.</strong> Read the finished CV
+        carefully — check names, dates, numbers, and company details
+        before sending it anywhere.
+      </div>
+    </div>
+  );
+}
+
+function GeneratingPanel() {
+  return (
+    <div className="mb-card flex flex-col items-center gap-4 py-12">
+      <Loader2 size={32} className="animate-spin text-teal" />
+      <div className="text-sm text-ink-2">
+        Writing your CV — this usually takes 20–40 seconds.
+      </div>
+      <div className="text-xs text-ink-muted text-center max-w-md">
+        When it's ready, read it closely. Claude can make mistakes
+        even with everything you've told it — check every name, date,
+        and number before sending.
+      </div>
+    </div>
+  );
+}
+
 function QuestionsForm({
   questions,
   answers,
   extraNotes,
   tone,
+  contact,
   onAnswerChange,
   onExtraChange,
   onToneChange,
+  onContactValue,
+  onContactSkip,
   onCancel,
   onSubmit,
   busy,
-  error,
 }: {
   questions: CvQuestion[];
   answers: Record<string, string>;
   extraNotes: string;
   tone: CvTone;
+  contact: ContactState;
   onAnswerChange: (id: string, value: string) => void;
   onExtraChange: (v: string) => void;
   onToneChange: (t: CvTone) => void;
+  onContactValue: (k: ContactKey, v: string) => void;
+  onContactSkip: (k: ContactKey, skipped: boolean) => void;
   onCancel: () => void;
   onSubmit: () => void;
   busy: boolean;
-  error: string | null;
 }) {
-  const filledCount = questions.filter((q) => (answers[q.id] ?? '').trim()).length;
+  const filledCount = questions.filter(
+    (q) => (answers[q.id] ?? '').trim(),
+  ).length;
   return (
     <div className="mb-card space-y-6">
       <div>
         <div className="mb-display text-lg mb-1">Tell Claude about you</div>
         <p className="text-sm text-ink-2">
-          {filledCount} of {questions.length} answered. You can skip
-          any — but the more you share, the sharper the rewrite.
+          {filledCount} of {questions.length} answered. The more you
+          share, the better the rewrite — we try to avoid placeholder
+          text in the finished CV.
         </p>
       </div>
 
+      <HallucinationWarning />
+
+      {/* Contact-info block — always first, so the candidate can see
+          exactly what will appear in the contact line of the finished
+          CV. Each field has a "skip" toggle. */}
+      <div>
+        <div className="mb-label mb-2">Contact details</div>
+        <div className="text-xs text-ink-muted mb-3">
+          These appear at the top of your CV. Untick any you don't
+          want shown. Leave the value empty to skip.
+        </div>
+        <div className="space-y-2">
+          {CONTACT_FIELDS.map((f) => {
+            const entry = contact[f.key];
+            return (
+              <div key={f.key} className="flex items-center gap-3">
+                <div className="w-24 text-xs text-ink-2 shrink-0">
+                  {f.label}
+                </div>
+                <input
+                  className="mb-input flex-1"
+                  placeholder={f.placeholder}
+                  value={entry.value}
+                  onChange={(e) => onContactValue(f.key, e.target.value)}
+                  disabled={!entry.include}
+                  style={!entry.include ? { opacity: 0.5 } : undefined}
+                />
+                <label className="text-xs text-ink-muted flex items-center gap-1 shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={!entry.include}
+                    onChange={(e) => onContactSkip(f.key, e.target.checked)}
+                  />
+                  skip
+                </label>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Claude's clarifying questions */}
       <div className="space-y-5">
         {questions.map((q, i) => (
           <div key={q.id}>
@@ -421,8 +547,7 @@ function QuestionsForm({
             {questions.length + 1}. Anything else you'd like to include?
           </label>
           <div className="text-xs text-ink-muted mb-2">
-            Extra context, constraints, or preferences Claude didn't ask
-            about. Optional.
+            Extra context, constraints, or preferences. Optional.
           </div>
           <textarea
             className="mb-input min-h-[90px]"
@@ -455,12 +580,6 @@ function QuestionsForm({
         </div>
       </div>
 
-      {error && (
-        <div className="text-sm text-rust bg-rust-light rounded-lg px-3 py-2">
-          {error}
-        </div>
-      )}
-
       <div className="flex items-center justify-between">
         <button className="mb-btn-secondary" onClick={onCancel}>
           Cancel
@@ -483,7 +602,67 @@ function QuestionsForm({
   );
 }
 
-function EditorView({
+// --- Preview view ---------------------------------------------------------
+
+/**
+ * Fetch the PDF for a given CV version with auth, and hold it in a
+ * blob-URL ref so the iframe src + download button both work without
+ * re-fetching. Re-runs whenever `cvId` changes.
+ */
+function usePdfBlob(cvId: string | undefined) {
+  const token = useAuthStore((s) => s.accessToken);
+  const [url, setUrl] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const urlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!cvId || !token) return;
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+
+    fetch(`/api/v1/cv/${cvId}/pdf`, {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`PDF fetch ${res.status}`);
+        const blob = await res.blob();
+        if (cancelled) return;
+        const u = URL.createObjectURL(blob);
+        // Revoke any prior blob URL to avoid leaking memory on version
+        // switch.
+        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+        urlRef.current = u;
+        setUrl(u);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setErr((e as Error).message);
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cvId, token]);
+
+  // Cleanup on unmount.
+  useEffect(() => {
+    return () => {
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = null;
+      }
+    };
+  }, []);
+
+  return { url, err, loading };
+}
+
+function PreviewView({
   current,
   versions,
   currentProfileVersion,
@@ -491,6 +670,7 @@ function EditorView({
   remaining,
   onSelectVersion,
   onRequestRegenerate,
+  onAfterProfileRebuild,
 }: {
   current: CvVersion;
   versions: CvVersion[];
@@ -499,299 +679,386 @@ function EditorView({
   remaining: number;
   onSelectVersion: (id: string) => void;
   onRequestRegenerate: () => void;
+  onAfterProfileRebuild: () => void;
 }) {
-  const update = useUpdateCvVersion();
   const remove = useDeleteCvVersion();
+  const rebuild = useRebuildProfileFromCv();
+  const pdf = usePdfBlob(current.id);
+  const [feedback, setFeedback] = useState<'idle' | 'liked' | 'disliked'>(
+    'idle',
+  );
 
-  const [src, setSrc] = useState(current.content_markdown);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-
+  // Reset feedback when switching to a different version.
   useEffect(() => {
-    setSrc(current.content_markdown);
-    setSavedAt(null);
-  }, [current.id, current.content_markdown]);
-
-  const stale = current.profile_version !== currentProfileVersion;
-  const words = wordCount(src);
-  const pages = pagesEstimate(words);
-  const lengthWarning =
-    words < 400 ? 'short' : words > 1000 ? 'long' : null;
-
-  async function save() {
-    await update.mutateAsync({ id: current.id, content_markdown: src });
-    setSavedAt(Date.now());
-  }
-
-  async function copyMarkdown() {
-    await navigator.clipboard.writeText(src);
-  }
+    setFeedback('idle');
+  }, [current.id]);
 
   function downloadPdf() {
-    window.open(`/api/v1/cv/${current.id}/pdf`, '_blank');
-  }
-
-  function downloadMarkdown() {
-    const blob = new Blob([src], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
+    if (!pdf.url) return;
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `cv-v${current.version}.md`;
+    a.href = pdf.url;
+    a.download = `cv-v${current.version}.pdf`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
   }
 
+  const stale = current.profile_version !== currentProfileVersion;
+
   return (
-    <div className="grid grid-cols-[220px_1fr] gap-6 items-start">
-      <aside className="space-y-2">
-        <div className="mb-label">Versions</div>
-        {versions.map((v) => {
-          const s = v.profile_version !== currentProfileVersion;
-          return (
-            <div
-              key={v.id}
-              className={`rounded-lg border px-3 py-2 cursor-pointer transition ${
-                v.id === current.id
-                  ? 'border-ink bg-parchment'
-                  : 'border-border hover:bg-parchment/50'
-              }`}
-              onClick={() => onSelectVersion(v.id)}
-            >
-              <div className="text-sm font-medium text-ink">v{v.version}</div>
-              <div className="text-xs text-ink-muted">
-                {new Date(v.created_at).toLocaleDateString()}
-              </div>
-              {s && (
-                <div className="text-[10px] text-rust mt-1">
-                  Previous profile
-                </div>
-              )}
-            </div>
-          );
-        })}
+    <div className="space-y-4">
+      {/* Version list — collapsible, mirroring cover-letter cards */}
+      <VersionList
+        versions={versions}
+        currentId={current.id}
+        currentProfileVersion={currentProfileVersion}
+        onSelect={onSelectVersion}
+        onDelete={(id) => {
+          if (
+            window.confirm('Delete this CV version? This cannot be undone.')
+          ) {
+            remove.mutate(id, {
+              onSuccess: () => {
+                // Reloading resets state back to "auto-open latest".
+                window.location.reload();
+              },
+            });
+          }
+        }}
+      />
 
-        <button
-          className="mb-btn-secondary w-full mt-4 text-xs"
-          onClick={onRequestRegenerate}
-          disabled={!canGenerate}
+      {stale && (
+        <div
+          className="rounded-lg px-3 py-2 text-sm flex items-center gap-2"
+          style={{ background: 'var(--parchment)' }}
         >
-          {remaining === 0 ? 'No credits left' : 'Generate new version'}
-        </button>
-      </aside>
+          <span className="text-rust font-medium">Previous profile.</span>
+          <span className="text-ink-2">
+            This CV was generated against an earlier profile. Regenerate
+            to reflect your current profile.
+          </span>
+        </div>
+      )}
 
-      <div className="space-y-4">
-        {stale && (
-          <div
-            className="rounded-lg px-3 py-2 text-sm flex items-start gap-2"
-            style={{ background: 'var(--parchment)' }}
+      <HallucinationWarning />
+
+      {/* Toolbar */}
+      <div
+        className="rounded-xl px-4 py-3 flex items-center justify-between flex-wrap gap-2"
+        style={{
+          background: 'var(--card)',
+          border: '0.5px solid var(--border)',
+        }}
+      >
+        <div className="text-xs text-ink-muted">
+          Preview of <strong>v{current.version}</strong>. This is exactly
+          what the PDF will look like.
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className="mb-btn-primary text-xs"
+            onClick={downloadPdf}
+            disabled={!pdf.url || pdf.loading}
           >
-            <Info size={14} className="mt-0.5 shrink-0" />
-            {STALE_MESSAGE}
+            {pdf.loading ? (
+              <>
+                <Loader2 size={12} className="animate-spin mr-1" />
+                Preparing…
+              </>
+            ) : (
+              <>
+                <Download size={12} className="mr-1" />
+                Download PDF
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* PDF preview — the browser's native renderer handles pagination,
+          fonts, layout. The user sees two pages if the CV runs long. */}
+      <div
+        className="rounded-xl overflow-hidden"
+        style={{
+          background: 'var(--parchment)',
+          border: '0.5px solid var(--border)',
+          height: '900px',
+        }}
+      >
+        {pdf.loading && (
+          <div className="h-full flex items-center justify-center text-ink-2">
+            <Loader2 size={24} className="animate-spin" />
           </div>
         )}
+        {pdf.err && !pdf.loading && (
+          <div className="h-full flex items-center justify-center text-rust text-sm p-4 text-center">
+            Couldn't load the PDF preview. {pdf.err}. Try refreshing the
+            page.
+          </div>
+        )}
+        {pdf.url && !pdf.loading && !pdf.err && (
+          <iframe
+            title={`CV v${current.version}`}
+            src={pdf.url}
+            className="w-full h-full"
+            style={{ border: 'none' }}
+          />
+        )}
+      </div>
 
+      {/* Feedback block — ask once per version. */}
+      {feedback === 'idle' && (
         <div
-          className="rounded-xl px-4 py-3 flex items-center justify-between flex-wrap gap-2"
+          className="rounded-xl px-5 py-4 flex items-center justify-between flex-wrap gap-3"
           style={{
             background: 'var(--card)',
             border: '0.5px solid var(--border)',
           }}
         >
-          <div className="text-xs text-ink-muted">
-            {words} words · ~{pages} page{pages === 1 ? '' : 's'}{' '}
-            {lengthWarning === 'short' && (
-              <span className="text-rust">
-                · under 400 — consider adding detail
-              </span>
-            )}
-            {lengthWarning === 'long' && (
-              <span className="text-rust">
-                · over 1000 — consider trimming
-              </span>
-            )}
+          <div className="text-sm text-ink">
+            Happy with this CV? You can download it, regenerate, or use
+            it as the basis for your profile.
           </div>
           <div className="flex items-center gap-2">
             <button
-              className="mb-btn-secondary text-xs"
-              onClick={copyMarkdown}
-              title="Copy markdown"
-            >
-              <Copy size={12} className="mr-1" />
-              Copy
-            </button>
-            <button
-              className="mb-btn-secondary text-xs"
-              onClick={downloadMarkdown}
-              title="Download source"
-            >
-              <FileDown size={12} className="mr-1" />
-              .md
-            </button>
-            <button
               className="mb-btn-primary text-xs"
-              onClick={downloadPdf}
-              title="Download PDF"
+              onClick={() => setFeedback('liked')}
             >
-              <Download size={12} className="mr-1" />
-              PDF
+              <Check size={12} className="mr-1" />
+              Yes, looks good
             </button>
             <button
               className="mb-btn-secondary text-xs"
-              onClick={() => {
-                if (
-                  window.confirm(
-                    'Delete this CV version? This cannot be undone.',
-                  )
-                ) {
-                  remove.mutate(current.id, {
-                    onSuccess: () => {
-                      window.location.reload();
-                    },
-                  });
-                }
-              }}
-              title="Delete version"
+              onClick={() => setFeedback('disliked')}
             >
-              <Trash2 size={12} />
+              Needs changes
             </button>
           </div>
         </div>
+      )}
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <div className="mb-label mb-1">Markdown source</div>
-            <textarea
-              className="mb-input font-mono text-xs leading-relaxed"
-              style={{ minHeight: 600 }}
-              value={src}
-              onChange={(e) => setSrc(e.target.value)}
-              spellCheck
-            />
-            <div className="flex items-center gap-3 mt-2">
+      {feedback === 'disliked' && (
+        <div
+          className="rounded-xl px-5 py-4"
+          style={{
+            background: 'var(--card)',
+            border: '0.5px solid var(--border)',
+          }}
+        >
+          <div className="text-sm text-ink mb-2">
+            What's not working? Tell us in the regenerate dialog and
+            Claude will use your feedback to produce a different version.
+          </div>
+          <div
+            className="text-xs text-ink-muted mb-3 rounded-lg px-3 py-2 flex items-start gap-2"
+            style={{ background: 'var(--parchment)' }}
+          >
+            <AlertTriangle size={12} className="mt-0.5 shrink-0 text-rust" />
+            Regenerating uses 1 of your {remaining} remaining credits this
+            cycle.
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              className="mb-btn-primary text-xs"
+              onClick={onRequestRegenerate}
+              disabled={!canGenerate}
+            >
+              <RefreshCw size={12} className="mr-1" />
+              Regenerate (1 credit)
+            </button>
+            <button
+              className="mb-btn-secondary text-xs"
+              onClick={() => setFeedback('idle')}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {feedback === 'liked' && (
+        <div
+          className="rounded-xl px-5 py-4 space-y-3"
+          style={{
+            background: 'var(--card)',
+            border: '0.5px solid var(--border)',
+          }}
+        >
+          <div className="flex items-start gap-3">
+            <UserCog size={20} className="text-teal mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <div className="text-sm font-medium text-ink mb-1">
+                Rebuild your profile from this CV
+              </div>
+              <p className="text-xs text-ink-muted mb-3">
+                Use this CV as the new source for your profile — skills,
+                seniority, salary, and so on. Your onboarding answers
+                stay the same, so you don't need to re-answer anything.
+                Existing jobs, cover letters, and older CVs stay but
+                will be marked as being based on a previous profile.
+              </p>
               <button
-                className="mb-btn-primary"
-                onClick={save}
-                disabled={
-                  update.isPending || src === current.content_markdown
+                className="mb-btn-secondary text-xs"
+                onClick={() =>
+                  rebuild.mutate(current.id, {
+                    onSuccess: onAfterProfileRebuild,
+                  })
                 }
+                disabled={rebuild.isPending}
               >
-                {update.isPending ? 'Saving…' : 'Save edits'}
+                {rebuild.isPending ? (
+                  <>
+                    <Loader2 size={12} className="animate-spin mr-1" />
+                    Rebuilding…
+                  </>
+                ) : (
+                  'Rebuild profile from this CV'
+                )}
               </button>
-              {savedAt && (
-                <span className="text-xs text-teal flex items-center gap-1">
-                  <Check size={12} />
-                  Saved
-                </span>
+              {rebuild.isError && (
+                <div className="text-xs text-rust mt-2">
+                  Couldn't rebuild. Try again.
+                </div>
               )}
             </div>
           </div>
-          <div>
-            <div className="mb-label mb-1">Preview</div>
-            <div
-              className="rounded-lg p-6"
-              style={{
-                background: '#fff',
-                border: '0.5px solid var(--border)',
-                minHeight: 600,
-              }}
-            >
-              <CvMarkdownPreview source={src} />
-            </div>
-          </div>
         </div>
+      )}
 
-        <div className="text-xs text-ink-muted flex items-center gap-1">
-          <ArrowUp size={12} />
-          Tip: the PDF export strips [VERIFY] and [REWRITE] tags. Edit
-          or address them before sending the CV.
-        </div>
+      {/* Generate new version button, always visible under preview */}
+      <div className="pt-2">
+        <button
+          className="mb-btn-secondary text-xs"
+          onClick={onRequestRegenerate}
+          disabled={!canGenerate}
+        >
+          <RefreshCw size={12} className="mr-1" />
+          {remaining === 0 ? 'No credits left' : 'Generate a new version'}
+        </button>
       </div>
     </div>
   );
 }
 
-function CvMarkdownPreview({ source }: { source: string }) {
+// --- Version list (collapsible, mirrors CoverLetterPanel LetterCard) -----
+
+function VersionList({
+  versions,
+  currentId,
+  currentProfileVersion,
+  onSelect,
+  onDelete,
+}: {
+  versions: CvVersion[];
+  currentId: string;
+  currentProfileVersion: number;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
   return (
-    <div>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children }) => (
-            <h1 className="text-2xl font-semibold text-ink mb-1 mt-0">
-              {children}
-            </h1>
-          ),
-          h2: ({ children }) => (
-            <h2 className="text-sm uppercase tracking-wider text-ink-2 mt-5 mb-2 pb-1 border-b border-border">
-              {children}
-            </h2>
-          ),
-          h3: ({ children }) => (
-            <h3 className="text-sm font-semibold text-ink mt-3 mb-1">
-              {children}
-            </h3>
-          ),
-          p: ({ children }) => (
-            <p className="text-sm text-ink leading-relaxed my-1">
-              {renderWithBadges(children)}
-            </p>
-          ),
-          li: ({ children }) => (
-            <li className="text-sm text-ink leading-relaxed">
-              {renderWithBadges(children)}
-            </li>
-          ),
-          ul: ({ children }) => (
-            <ul className="list-disc ml-5 my-2 space-y-0.5">{children}</ul>
-          ),
-          em: ({ children }) => (
-            <em className="not-italic text-ink-muted text-xs">
-              {children}
-            </em>
-          ),
-          strong: ({ children }) => (
-            <strong className="font-semibold text-ink">{children}</strong>
-          ),
-        }}
-      >
-        {source}
-      </ReactMarkdown>
+    <div className="space-y-2">
+      {versions.map((v) => {
+        const stale = v.profile_version !== currentProfileVersion;
+        const isCurrent = v.id === currentId;
+        return (
+          <VersionRow
+            key={v.id}
+            version={v}
+            stale={stale}
+            isCurrent={isCurrent}
+            onSelect={() => onSelect(v.id)}
+            onDelete={() => onDelete(v.id)}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function renderWithBadges(children: React.ReactNode): React.ReactNode {
-  const arr = Array.isArray(children) ? children : [children];
-  return arr.map((child, i) => {
-    if (typeof child !== 'string') return <span key={i}>{child}</span>;
-    const parts = child.split(/(\[(?:VERIFY|REWRITE)\s*:\s*[^\]]*\])/gi);
-    return (
-      <span key={i}>
-        {parts.map((part, j) => {
-          const m = /^\[(VERIFY|REWRITE)\s*:\s*([^\]]*)\]$/i.exec(part);
-          if (!m) return part;
-          const kind = m[1].toUpperCase();
-          const note = m[2].trim();
-          const isVerify = kind === 'VERIFY';
-          return (
+function VersionRow({
+  version,
+  stale,
+  isCurrent,
+  onSelect,
+  onDelete,
+}: {
+  version: CvVersion;
+  stale: boolean;
+  isCurrent: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+}) {
+  // Each row is a clickable header — clicking selects that version for
+  // preview. A small chevron hints at collapse behaviour; we don't
+  // embed the CV body inside the row (the preview already shows it
+  // above), we just let the row flip between "expanded" metadata and
+  // collapsed title. This keeps the list compact for users with many
+  // versions.
+  const [open, setOpen] = useState(isCurrent);
+  useEffect(() => {
+    if (isCurrent) setOpen(true);
+  }, [isCurrent]);
+
+  return (
+    <div
+      className={`rounded-lg overflow-hidden border ${
+        isCurrent ? 'border-ink' : 'border-border'
+      }`}
+      style={{ background: isCurrent ? 'var(--parchment)' : 'var(--card)' }}
+    >
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((v) => !v);
+          onSelect();
+        }}
+        className="w-full flex items-center justify-between p-3 hover:bg-cream/80 transition"
+      >
+        <div className="flex items-center gap-2 text-xs text-ink-3">
+          <ChevronDown
+            size={14}
+            className={`transition-transform ${open ? '' : '-rotate-90'}`}
+          />
+          <span className="font-medium text-ink-2">v{version.version}</span>
+          <span>·</span>
+          <span className="capitalize">{version.tone}</span>
+          <span>·</span>
+          <span>{new Date(version.created_at).toLocaleString()}</span>
+          {stale && (
             <span
-              key={j}
-              className={`inline-block align-baseline px-1.5 py-0.5 mx-0.5 rounded text-[10px] font-medium ${
-                isVerify
-                  ? 'bg-rust-light text-rust'
-                  : 'bg-teal-soft text-teal'
-              }`}
-              title={note}
+              className="ml-1 px-1.5 py-0.5 rounded text-[10px]"
+              style={{
+                background: 'var(--rust-light, #f7e3d9)',
+                color: 'var(--rust, #b0552d)',
+              }}
             >
-              {kind}: {note}
+              Previous profile
             </span>
-          );
-        })}
-      </span>
-    );
-  });
+          )}
+        </div>
+        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="p-1.5 rounded hover:bg-rust-light text-ink-3 hover:text-rust"
+            title="Delete"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </button>
+      {open && version.regenerate_reason && (
+        <div className="px-4 pb-3 pt-0 text-xs text-ink-muted">
+          Regenerate reason: {version.regenerate_reason}
+        </div>
+      )}
+    </div>
+  );
 }
+
+// --- Regenerate modal -----------------------------------------------------
 
 function RegenerateModal({
   remaining,
@@ -831,9 +1098,8 @@ function RegenerateModal({
         >
           <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rust" />
           <div>
-            Please review every word of the new version. Claude can
-            hallucinate — check names, dates, numbers, and anything
-            marked [VERIFY].
+            Claude can hallucinate. When the new version arrives, check
+            every name, date, and number before sending your CV.
           </div>
         </div>
 
@@ -841,8 +1107,8 @@ function RegenerateModal({
           What would you like different this time?
         </label>
         <div className="text-xs text-ink-muted mb-2">
-          Be specific — this guidance is fed directly to Claude. (min
-          20 characters)
+          Be specific — this guidance is fed directly to Claude. (min 20
+          characters)
         </div>
         <textarea
           className="mb-input min-h-[100px]"

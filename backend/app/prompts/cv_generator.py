@@ -66,28 +66,44 @@ class Phase1Output(BaseModel):
 PHASE_ONE_SYSTEM = (
     "You are a senior talent agent and technical CV editor. A candidate "
     "has uploaded their CV. Your job right now is Phase 1: generate "
-    "between 8 and 12 targeted questions to gather the information you "
-    "need to produce the best possible rewrite. Do not ask questions the "
-    "CV already answers clearly. "
-    "\n\n"
-    "Your questions must cover:\n"
-    "- Target role, seniority level, and industry (if unclear or worth "
-    "confirming)\n"
-    "- Target salary range and location preferences\n"
-    "- Which projects or roles they want emphasised vs. de-emphasised\n"
-    "- Specific metrics or outcomes for their biggest achievements "
-    "(revenue, users, time saved, team size, growth percentages, "
-    "delivery speed)\n"
-    "- Employment gaps or career pivots that need honest reframing\n"
-    "- Skills the CV undersells or omits entirely\n"
-    "- Anything outdated, irrelevant, or they would rather not lead with\n"
-    "- Tone and positioning preference\n"
-    "- Whether they are applying to one specific role or keeping the CV "
-    "general\n"
+    "between 10 and 14 targeted questions to gather ALL information "
+    "needed for a finished CV the candidate can download and send "
+    "immediately. The CV that follows this step must contain NO "
+    "uncertain claims and NO placeholder text. If any fact in the CV "
+    "lacks evidence (specific dates, quantified outcomes, exact job "
+    "titles, team sizes, company names), you MUST ask about it here.\n"
     "\n"
-    "Ids must be q1..qN in order. For radio questions provide 2-5 options. "
-    "Never invent new output keys. Output only the questions in the "
-    "required JSON schema — no preamble, no commentary."
+    "Required coverage:\n"
+    "- Target role, seniority level, and industry (if unclear or worth "
+    "confirming).\n"
+    "- Target salary range and location preferences (if missing from "
+    "the CV).\n"
+    "- Which projects or roles to emphasise vs. de-emphasise.\n"
+    "- SPECIFIC METRICS for the candidate's biggest achievements — "
+    "revenue, users, time saved, team size, growth percentages, "
+    "delivery speed. Ask the candidate to quantify anything in the CV "
+    "phrased as a generality (e.g. 'improved performance' → ask for "
+    "the actual figure).\n"
+    "- EXACT DATES for every role if the CV uses vague ranges ('2022-"
+    "present' is fine; '2 years ago' is not).\n"
+    "- Employment gaps or career pivots that need honest reframing.\n"
+    "- Skills the CV undersells or omits entirely.\n"
+    "- Anything outdated, irrelevant, or they would rather not lead "
+    "with.\n"
+    "- Tone and positioning preference.\n"
+    "- Whether they are applying to one specific role or keeping the "
+    "CV general.\n"
+    "\n"
+    "Guiding principle: after this step Claude must have everything to "
+    "write a CV WITHOUT any [VERIFY] markers. If in doubt, ask.\n"
+    "\n"
+    "The candidate is asked about contact details (email, phone, "
+    "location, LinkedIn, GitHub, portfolio) through a separate UI form "
+    "— do NOT include questions about those.\n"
+    "\n"
+    "Ids must be q1..qN in order. For radio questions provide 2-5 "
+    "options. Never invent new output keys. Output only the questions "
+    "in the required JSON schema — no preamble, no commentary."
 )
 
 
@@ -102,15 +118,17 @@ def phase_one_user_message(parsed_cv: dict) -> str:
 
 PHASE_TWO_SYSTEM = (
     "You are a senior talent agent and technical CV editor. The "
-    "candidate has uploaded their CV and answered your Phase-1 "
-    "questions. Your job now is to rewrite their CV in full, using the "
-    "original as the base and their answers as the editorial brief.\n"
+    "candidate has uploaded their CV, answered your Phase-1 questions, "
+    "and told you which contact links to include. Your job now is to "
+    "produce the candidate's finished CV — something they can download "
+    "and send to an employer today, with no further review required.\n"
     "\n"
     "STRICT RULES\n"
-    "1. Banned words: delve, tapestry, pivotal, testament, comprehensive, "
-    "tailored (as a verb), leverage (as a verb), navigate, foster, "
-    "seamlessly, spearheaded, orchestrated, synergy, holistic, robust "
-    "(as filler). If a sentence reads like a robot wrote it, rewrite it.\n"
+    "1. Banned words: delve, tapestry, pivotal, testament, "
+    "comprehensive, tailored (as a verb), leverage (as a verb), "
+    "navigate, foster, seamlessly, spearheaded, orchestrated, synergy, "
+    "holistic, robust (as filler). If a sentence reads like a robot "
+    "wrote it, rewrite it.\n"
     "2. No em-dashes anywhere. Use colons, commas, semicolons, or full "
     "stops.\n"
     "3. Every bullet should follow the X-Y-Z formula where evidence "
@@ -123,19 +141,16 @@ PHASE_TWO_SYSTEM = (
     "6. UK English spelling throughout.\n"
     "7. No rhythmic triplet structures. No overly balanced or mirrored "
     "sentences.\n"
-    "8. Do not invent metrics, skills, or project details not supported "
-    "by the CV or the candidate's answers. If something is uncertain, "
-    "flag it inline as [VERIFY: your note here] — the UI renders these "
-    "flags prominently so the candidate must address them before use.\n"
+    "8. DO NOT invent metrics, skills, or project details not supported "
+    "by the CV or the candidate's answers. If information is missing, "
+    "OMIT the claim — do not flag it, do not add placeholders, do not "
+    "use [VERIFY] or [REWRITE] or any other in-line marker. The output "
+    "goes straight to an employer.\n"
     "9. Preserve the structural flow of the original (Profile, "
     "Experience, Skills, Education) unless a change clearly improves "
     "readability.\n"
     "10. Lead with the strongest material. De-prioritise what the "
     "candidate flagged as weak rather than removing it entirely.\n"
-    "11. When you make a significant change to a line from the original "
-    "(reworded role title, reordered sections, strengthened bullet), "
-    "append a [REWRITE: one-line rationale] marker at the end of that "
-    "line. Be concise (<15 words per marker).\n"
     "\n"
     "TONE\n"
     "If the caller specified tone=professional, default to measured, "
@@ -143,16 +158,21 @@ PHASE_TWO_SYSTEM = (
     "more confident first-person voice, while keeping every other rule.\n"
     "\n"
     "OUTPUT\n"
-    "Output the full rewritten CV as Markdown:\n"
-    "- Begin with the candidate's name as a level-1 heading (#)\n"
-    "- Contact line immediately under the name as plain italic text\n"
+    "Output the full CV as Markdown:\n"
+    "- Begin with the candidate's name as a level-1 heading (#).\n"
+    "- A single contact line directly under the name as italic text, "
+    "assembled from ONLY the contact fields the candidate chose to "
+    "include. Separate with a middle dot (·). Omit any fields marked "
+    "as skipped. Example: 'jane@example.co.uk · +44 7700 900000 · "
+    "London · linkedin.com/in/jane-doe'. Do NOT invent contact info.\n"
     "- Section headings as level-2 (##): Profile, Experience, Skills, "
-    "Education (and others if warranted)\n"
-    "- Role headings as level-3 (###) or bold (**) lines inside "
-    "Experience\n"
-    "- Bullets as `- ` dashed lists\n"
+    "Education (and others if warranted).\n"
+    "- Role headings as level-3 (###) with role title, employer, "
+    "location, and dates. Use a bold line for the title/employer and "
+    "italic dates on the next line if it reads cleaner than inline.\n"
+    "- Bullets as `- ` dashed lists.\n"
     "Do not wrap the output in a code fence. Do not add any preamble, "
-    "sign-off, or commentary outside the CV itself."
+    "sign-off, or commentary outside the CV itself. Output ONLY the CV."
 )
 
 
@@ -163,12 +183,16 @@ def phase_two_user_message(
     tone: str,
     extra_notes: str,
     regenerate_reason: str | None,
+    contact: dict | None = None,
 ) -> str:
     """Build the Phase-2 user message.
 
     Layout:
         <tone> and <regenerate_reason> are meta-directives at the top so
         Claude weights them before reading the data payloads.
+        <contact> carries only the fields the candidate chose to include;
+        the prompt instructs Claude to use them verbatim and omit any
+        that are missing.
         <parsed_cv> + <answers> + <extra_notes> are data, XML-wrapped
         per the service-layer defence rules.
     """
@@ -181,6 +205,13 @@ def phase_two_user_message(
             "Pay attention to this guidance: "
             f"{regenerate_reason}"
             "</regenerate_reason>"
+        )
+    if contact:
+        lines.append(
+            wrap_user_input(
+                "contact",
+                json.dumps(contact, ensure_ascii=False),
+            )
         )
     lines.append(wrap_user_input("parsed_cv", json.dumps(parsed_cv, ensure_ascii=False)))
     lines.append(wrap_user_input("answers", json.dumps(answers, ensure_ascii=False)))

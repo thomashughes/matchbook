@@ -55,17 +55,17 @@ export function ProfilePage() {
           />
         </Field>
 
-        <Field label="Hard skills (comma separated)">
-          <input
-            className="mb-input"
+        <Field label="Hard skills">
+          <textarea
+            className="mb-input min-h-[80px]"
             value={(form.hard_skills ?? []).join(', ')}
             onChange={(e) => setForm({ ...form, hard_skills: splitList(e.target.value) })}
           />
         </Field>
 
-        <Field label="Soft skills (comma separated)">
-          <input
-            className="mb-input"
+        <Field label="Soft skills">
+          <textarea
+            className="mb-input min-h-[80px]"
             value={(form.soft_skills ?? []).join(', ')}
             onChange={(e) => setForm({ ...form, soft_skills: splitList(e.target.value) })}
           />
