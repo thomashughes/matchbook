@@ -18,7 +18,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Check,
-  ChevronDown,
   Download,
   FileText,
   Loader2,
@@ -40,6 +39,7 @@ import {
   useDeleteCvVersion,
   useProfile,
   useRebuildProfileFromCv,
+  useRegenerateCv,
 } from '@/api/hooks';
 import type {
   CvAnswer,
@@ -100,6 +100,7 @@ export function CvBuilderPage() {
   const versions = useCvVersions();
   const phaseOne = useCvPhaseOne();
   const phaseTwo = useCvPhaseTwo();
+  const regen = useRegenerateCv();
   const nav = useNavigate();
 
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
@@ -331,27 +332,38 @@ export function CvBuilderPage() {
         />
       )}
 
-      {regenOpen && (
+      {regenOpen && current && (
         <RegenerateModal
           tone={tone}
           remaining={remaining === undefined ? 0 : remaining}
           onToneChange={setTone}
           onClose={() => setRegenOpen(false)}
-          onConfirm={(reason) => {
+          onConfirm={async (reason) => {
+            // Close the modal first so the transition feels
+            // responsive; then flip to the generating view before
+            // firing the mutation so the user immediately sees the
+            // spinner rather than a lingering preview.
             setRegenOpen(false);
-            if (questions.length === 0) {
-              // No cached phase-1 state — re-fetch questions first,
-              // then let the user update answers (pre-populated where
-              // possible). For v1 we just go through phase-1 again.
-              void startQuestions();
-            } else {
-              void submit(reason);
+            setPhase('generating');
+            try {
+              const row = await regen.mutateAsync({
+                cvId: current.id,
+                reason,
+                tone,
+              });
+              setCurrentVersionId(row.id);
+              setPhase('preview');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            } catch (e) {
+              // Fall back to the preview — the credit was refunded
+              // server-side; the error banner below surfaces why.
+              setPhase('preview');
             }
           }}
         />
       )}
 
-      {phaseTwo.isError && (
+      {(phaseTwo.isError || regen.isError) && (
         <div className="text-sm text-rust bg-rust-light rounded-lg px-3 py-2">
           Couldn't generate — please try again in a moment. No credit
           was consumed.
@@ -1024,19 +1036,6 @@ function PreviewView({
         </div>
       )}
 
-      {/* Generate new version button, always visible under preview */}
-      <div className="pt-2">
-        <button
-          className="mb-btn-secondary text-xs"
-          onClick={onRequestRegenerate}
-          disabled={!canGenerate}
-        >
-          <RefreshCw size={12} className="mr-1" />
-          {remaining === 0
-            ? 'No credits left'
-            : 'Generate a new version'}
-        </button>
-      </div>
     </div>
   );
 }
@@ -1089,45 +1088,33 @@ function VersionRow({
   onSelect: () => void;
   onDelete: () => void;
 }) {
-  // Each row is a clickable header — clicking selects that version for
-  // preview. A small chevron hints at collapse behaviour; we don't
-  // embed the CV body inside the row (the preview already shows it
-  // above), we just let the row flip between "expanded" metadata and
-  // collapsed title. This keeps the list compact for users with many
-  // versions.
-  const [open, setOpen] = useState(isCurrent);
-  useEffect(() => {
-    if (isCurrent) setOpen(true);
-  }, [isCurrent]);
-
+  // Plain clickable row — no expand/collapse. The preview above the
+  // version list shows the full CV content, so a local expansion would
+  // just duplicate information. Clicking the row switches the active
+  // version in the preview. A regenerate reason, if any, is shown
+  // inline for context.
   return (
-    <div
-      className={`rounded-lg overflow-hidden border ${
-        isCurrent ? 'border-ink' : 'border-border'
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`w-full rounded-lg border p-3 text-left transition ${
+        isCurrent
+          ? 'border-ink bg-parchment'
+          : 'border-border bg-card hover:bg-parchment/50'
       }`}
-      style={{ background: isCurrent ? 'var(--parchment)' : 'var(--card)' }}
     >
-      <button
-        type="button"
-        onClick={() => {
-          setOpen((v) => !v);
-          onSelect();
-        }}
-        className="w-full flex items-center justify-between p-3 hover:bg-cream/80 transition"
-      >
-        <div className="flex items-center gap-2 text-xs text-ink-3">
-          <ChevronDown
-            size={14}
-            className={`transition-transform ${open ? '' : '-rotate-90'}`}
-          />
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs text-ink-3 min-w-0">
           <span className="font-medium text-ink-2">v{version.version}</span>
           <span>·</span>
           <span className="capitalize">{version.tone}</span>
           <span>·</span>
-          <span>{new Date(version.created_at).toLocaleString()}</span>
+          <span className="truncate">
+            {new Date(version.created_at).toLocaleString()}
+          </span>
           {stale && (
             <span
-              className="ml-1 px-1.5 py-0.5 rounded text-[10px]"
+              className="ml-1 px-1.5 py-0.5 rounded text-[10px] shrink-0"
               style={{
                 background: 'var(--rust-light, #f7e3d9)',
                 color: 'var(--rust, #b0552d)',
@@ -1137,25 +1124,24 @@ function VersionRow({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-            className="p-1.5 rounded hover:bg-rust-light text-ink-3 hover:text-rust"
-            title="Delete"
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
-      </button>
-      {open && version.regenerate_reason && (
-        <div className="px-4 pb-3 pt-0 text-xs text-ink-muted">
-          Regenerate reason: {version.regenerate_reason}
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="p-1.5 rounded hover:bg-rust-light text-ink-3 hover:text-rust shrink-0 cursor-pointer"
+          title="Delete"
+          role="button"
+        >
+          <Trash2 size={14} />
+        </span>
+      </div>
+      {version.regenerate_reason && (
+        <div className="text-xs text-ink-muted mt-1 pl-0 line-clamp-2">
+          Reason: {version.regenerate_reason}
         </div>
       )}
-    </div>
+    </button>
   );
 }
 

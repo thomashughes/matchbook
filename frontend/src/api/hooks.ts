@@ -510,6 +510,32 @@ export function useDeleteCvVersion() {
 }
 
 /**
+ * Regenerate a CV using a source version's stored answers plus a new
+ * "what I want different" reason. No Phase-1 questionnaire — the
+ * prior Phase-1 answers are loaded server-side from the source
+ * version's questions_payload.
+ */
+export function useRegenerateCv() {
+  const qc = useQueryClient();
+  return useMutation<
+    CvVersion,
+    Error,
+    { cvId: string; reason: string; tone?: CvTone }
+  >({
+    mutationFn: ({ cvId, reason, tone }) =>
+      api<CvVersion>(`/cv/${cvId}/regenerate`, {
+        method: 'POST',
+        body: { reason, tone },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cv', 'versions'] });
+      qc.invalidateQueries({ queryKey: ['cv', 'quota'] });
+      qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+    },
+  });
+}
+
+/**
  * Re-parse a chosen CV version and refresh the user's profile typed
  * fields (seniority, skills, salary, …) using the existing onboarding
  * answers. Bumps users.profile_version so jobs + cover letters show

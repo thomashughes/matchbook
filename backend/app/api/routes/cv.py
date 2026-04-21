@@ -52,6 +52,7 @@ from app.schemas.cv import (
     Phase1Out,
     Phase1QuestionOut,
     Phase2In,
+    RegenerateIn,
 )
 from app.schemas.profile import ProfileOut
 from app.services.ai_service import complete_json, complete_text
@@ -234,6 +235,114 @@ async def generate(
                 "contact": body.contact.model_dump() if body.contact else None,
             },
             regenerate_reason=body.regenerate_reason,
+            profile_version=user.profile_version,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        return _out(row)
+    except Exception:
+        await refund(db, user, "cv_generation", scope_key=None)
+        raise
+
+
+# --- Regenerate ----------------------------------------------------------
+
+
+@router.post(
+    "/{cv_id}/regenerate",
+    response_model=CvVersionOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(rate_limit_ai),
+        Depends(entitlement("cv_generation", "user")),
+    ],
+)
+async def regenerate(
+    cv_id: UUID,
+    body: RegenerateIn,
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+) -> CvVersionOut:
+    """Produce a new version of a previous CV using the stored answers.
+
+    Why a dedicated endpoint rather than POST /cv with the old answers
+    re-sent from the frontend:
+        The frontend shouldn't need to re-collect or cache the prior
+        Phase-1 answers — they already live on the source CvVersion's
+        questions_payload. Sending them from disk means the user can
+        just say 'what I want different' and Claude picks up everything
+        else as-is. Also avoids trusting a client round-trip with the
+        full prompt payload.
+
+    Credit cost: identical to POST /cv. Refund-on-failure via the same
+    try/except wrapper the initial generation uses.
+    """
+    try:
+        source = await _own_cv(cv_id, user, db)
+
+        # Extract stored inputs. questions_payload was written at
+        # generation time as { answers, extra_notes, contact } — see
+        # generate() above. Older rows may lack `contact`; default to
+        # None so the Phase-2 builder still works.
+        payload = source.questions_payload or {}
+        stored_answers = payload.get("answers") or []
+        stored_extra = payload.get("extra_notes") or ""
+        stored_contact = payload.get("contact") or None
+        tone = body.tone or source.tone  # keep prior tone unless overridden
+
+        profile = await _require_profile(user, db)
+
+        # Same contact-cleaning logic as the primary generate path so
+        # empty-but-present keys don't land as "None" in the CV.
+        contact_dict: dict | None = None
+        if stored_contact:
+            cleaned: dict = {}
+            for k, v in stored_contact.items():
+                if k == "extra":
+                    items = [
+                        {"label": it.get("label", "").strip(), "value": it.get("value", "").strip()}
+                        for it in (v or [])
+                        if it and it.get("label", "").strip() and it.get("value", "").strip()
+                    ]
+                    if items:
+                        cleaned["extra"] = items
+                else:
+                    if v and str(v).strip():
+                        cleaned[k] = str(v).strip()
+            contact_dict = cleaned or None
+
+        md = await complete_text(
+            system=cv_prompt.PHASE_TWO_SYSTEM,
+            user=cv_prompt.phase_two_user_message(
+                profile.structured_data,
+                stored_answers,
+                tone=tone,
+                extra_notes=stored_extra,
+                regenerate_reason=body.reason,
+                contact=contact_dict,
+            ),
+            max_tokens=6000,
+        )
+
+        max_v = await db.execute(
+            select(func.coalesce(func.max(CvVersion.version), 0)).where(
+                CvVersion.user_id == user.id
+            )
+        )
+        next_version = int(max_v.scalar() or 0) + 1
+
+        row = CvVersion(
+            user_id=user.id,
+            version=next_version,
+            content_markdown=md,
+            tone=tone,
+            questions_payload={
+                "answers": stored_answers,
+                "extra_notes": stored_extra,
+                "contact": stored_contact,
+            },
+            regenerate_reason=body.reason,
             profile_version=user.profile_version,
         )
         db.add(row)

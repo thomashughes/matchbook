@@ -98,3 +98,18 @@ class CvVersionPatch(BaseModel):
     stays stable after generation."""
 
     content_markdown: str
+
+
+class RegenerateIn(BaseModel):
+    """Body for POST /cv/{id}/regenerate.
+
+    The source version's stored answers / extra_notes / contact are
+    reused from the database; the user only contributes what they
+    want different and optionally a tone change. Enforced min-length
+    on `reason` is deliberate — a brief one-liner forces the user to
+    articulate the problem, which makes the prompt produce different
+    output rather than just trying again with the same signal.
+    """
+
+    reason: str = Field(min_length=20)
+    tone: Tone | None = None
