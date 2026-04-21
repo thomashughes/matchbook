@@ -324,7 +324,7 @@ export function CvBuilderPage() {
           versions={versions.data ?? []}
           currentProfileVersion={prof.data.profile_version}
           canGenerate={canGenerate}
-          remaining={remaining ?? 0}
+          remaining={remaining === undefined ? 0 : remaining}
           onSelectVersion={setCurrentVersionId}
           onRequestRegenerate={() => setRegenOpen(true)}
           onAfterProfileRebuild={() => nav('/profile')}
@@ -334,7 +334,7 @@ export function CvBuilderPage() {
       {regenOpen && (
         <RegenerateModal
           tone={tone}
-          remaining={remaining ?? 0}
+          remaining={remaining === undefined ? 0 : remaining}
           onToneChange={setTone}
           onClose={() => setRegenOpen(false)}
           onConfirm={(reason) => {
@@ -772,7 +772,9 @@ function PreviewView({
   versions: CvVersion[];
   currentProfileVersion: number;
   canGenerate: boolean;
-  remaining: number;
+  // null = unlimited (grandfathered). Number = remaining credits this
+  // cycle (0 disables generate buttons).
+  remaining: number | null;
   onSelectVersion: (id: string) => void;
   onRequestRegenerate: () => void;
   onAfterProfileRebuild: () => void;
@@ -950,8 +952,9 @@ function PreviewView({
             style={{ background: 'var(--parchment)' }}
           >
             <AlertTriangle size={12} className="mt-0.5 shrink-0 text-rust" />
-            Regenerating uses 1 of your {remaining} remaining credits this
-            cycle.
+            {remaining === null
+              ? 'Regenerating uses 1 credit (you have unlimited generations on your plan).'
+              : `Regenerating uses 1 of your ${remaining} remaining credits this cycle.`}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -1029,7 +1032,9 @@ function PreviewView({
           disabled={!canGenerate}
         >
           <RefreshCw size={12} className="mr-1" />
-          {remaining === 0 ? 'No credits left' : 'Generate a new version'}
+          {remaining === 0
+            ? 'No credits left'
+            : 'Generate a new version'}
         </button>
       </div>
     </div>
@@ -1163,14 +1168,17 @@ function RegenerateModal({
   onClose,
   onConfirm,
 }: {
-  remaining: number;
+  // null = unlimited (grandfathered accounts). Numbers are remaining
+  // credits — 0 blocks submit, >0 allows it.
+  remaining: number | null;
   tone: CvTone;
   onToneChange: (t: CvTone) => void;
   onClose: () => void;
   onConfirm: (reason: string) => void;
 }) {
   const [reason, setReason] = useState('');
-  const canSubmit = reason.trim().length >= 20 && remaining > 0;
+  const hasCredits = remaining === null || remaining > 0;
+  const canSubmit = reason.trim().length >= 20 && hasCredits;
 
   return (
     <div
@@ -1184,8 +1192,14 @@ function RegenerateModal({
       >
         <div className="mb-display text-lg mb-1">Regenerate your CV</div>
         <div className="text-sm text-ink-2 mb-4">
-          You have <strong>{remaining}</strong> of 2 generations left
-          this billing cycle. This will use one credit.
+          {remaining === null ? (
+            <>You have <strong>unlimited</strong> generations on your plan. This will use one credit from your quota (no effect for grandfathered accounts).</>
+          ) : (
+            <>
+              You have <strong>{remaining}</strong> of 2 generations
+              left this billing cycle. This will use one credit.
+            </>
+          )}
         </div>
 
         <div
