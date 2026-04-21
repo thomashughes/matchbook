@@ -23,6 +23,14 @@ export interface Profile {
   notice_period: string | null;
   career_goals: string | null;
   structured_data: Record<string, unknown> | null;
+  // True once structured_data.generated exists (i.e. the user has
+  // completed onboarding's CV-upload + answer-submit steps). Drives
+  // the top-bar "Continue onboarding" banner: shown when False.
+  onboarding_complete: boolean;
+  // Current profile version. Bumped on POST /profile/rebuild. Compared
+  // against per-artefact `profile_version` fields (jobs / cover letters
+  // / cv versions) to show "based on a previous profile" banners.
+  profile_version: number;
 }
 
 export interface Question {
@@ -116,7 +124,42 @@ export interface CoverLetter {
   tone: 'formal' | 'conversational';
   length: 'short' | 'standard' | 'detailed';
   version: number;
+  // Snapshot of user.profile_version at generation time. When it
+  // differs from the user's current profile_version the UI shows a
+  // "generated against previous profile" pill.
+  profile_version: number;
   created_at: string;
+}
+
+// --- CV generator --------------------------------------------------------
+
+export type CvTone = 'professional' | 'bold';
+
+export type CvQuestionType = 'text' | 'textarea' | 'radio';
+
+export interface CvQuestion {
+  id: string;
+  text: string;
+  type: CvQuestionType;
+  hint: string;
+  options: string[];
+}
+
+export interface CvAnswer {
+  id: string;
+  question: string;
+  answer: string;
+}
+
+export interface CvVersion {
+  id: string;
+  version: number;
+  content_markdown: string;
+  tone: string;
+  profile_version: number;
+  regenerate_reason: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /**
@@ -135,7 +178,8 @@ export type EntitlementResource =
   | 'draft_follow_up'
   | 'draft_interview_prep'
   | 'cover_letter'
-  | 'ai_job_search';
+  | 'ai_job_search'
+  | 'cv_generation';
 
 /**
  * One row of the per-job quota block on JobDetail and the per-user
@@ -166,6 +210,10 @@ export interface JobDetail {
   created_at: string;
   updated_at: string;
   score: JobScore | null;
+  // Profile version this job was last scored against. NULL if never
+  // scored. UI compares against profile.profile_version to decide
+  // whether to render the stale-score banner.
+  scored_against_profile_version: number | null;
   // Present on GET/PATCH responses. create_job returns [] to avoid a
   // second DB query — the next GET will fill it.
   quota: QuotaItem[];

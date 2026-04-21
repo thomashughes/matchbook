@@ -11,7 +11,7 @@ Tenancy note:
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDPkMixin
@@ -83,4 +83,12 @@ class User(Base, UUIDPkMixin, TimestampMixin):
     # the frontend so it can display "cancelling on <date>".
     cancel_at_period_end: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # Monotonic counter bumped on POST /profile/rebuild. Dependent artefacts
+    # (jobs, cover_letters, cv_versions) snapshot this value at creation
+    # time; the UI compares snapshot != current to show "generated against
+    # a previous profile" banners. Starts at 1.
+    profile_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
     )

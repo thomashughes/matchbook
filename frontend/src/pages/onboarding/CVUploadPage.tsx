@@ -27,12 +27,23 @@ export function CVUploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Drag highlight — purely visual. We track a boolean rather than
+  // CSS-only :hover so the drop zone stays highlighted while the user
+  // is actually dragging (not just hovering).
+  const [dragOver, setDragOver] = useState(false);
 
   function pick(f: File | null) {
     setErr(null);
     if (!f) return;
     if (f.size > MAX_BYTES) return setErr('File is over 5 MB.');
-    if (!ALLOWED.includes(f.type)) return setErr('PDF, DOCX or TXT only.');
+    // Some browsers / OSes report Word docs without a recognised MIME
+    // type when dropped. Fall back to the extension if the MIME check
+    // doesn't match — the backend re-validates via python-magic on
+    // signature bytes, so a permissive client check is safe here.
+    const allowedExt = /\.(pdf|docx|doc|txt)$/i.test(f.name);
+    if (!ALLOWED.includes(f.type) && !allowedExt) {
+      return setErr('PDF or Word documents only.');
+    }
     setFile(f);
   }
 
@@ -61,7 +72,26 @@ export function CVUploadPage() {
           <AILoadingSteps steps={STEPS} />
         ) : (
           <>
-            <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-border rounded-xl p-8 cursor-pointer hover:bg-parchment/50 transition">
+            <label
+              className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl p-8 cursor-pointer transition ${
+                dragOver
+                  ? 'border-teal bg-parchment'
+                  : 'border-border hover:bg-parchment/50'
+              }`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                // dataTransfer.files is a FileList; we only care about
+                // the first. Extra drops are ignored rather than
+                // queued — CV upload is explicitly single-file.
+                pick(e.dataTransfer.files[0] ?? null);
+              }}
+            >
               <UploadCloud size={28} className="text-ink-3" />
               <span className="text-sm text-ink-2">
                 {file ? (
@@ -70,12 +100,20 @@ export function CVUploadPage() {
                     {file.name}
                   </span>
                 ) : (
-                  <>Click to choose a file <span className="text-ink-3">(PDF, DOCX, TXT · max 5 MB)</span></>
+                  <>
+                    <span className="font-medium text-ink">
+                      Drag and drop your CV
+                    </span>{' '}
+                    or click to choose a file
+                  </>
                 )}
+              </span>
+              <span className="text-xs text-ink-3">
+                PDF or Word documents only · max 5 MB
               </span>
               <input
                 type="file"
-                accept=".pdf,.docx,.txt"
+                accept=".pdf,.docx,.doc"
                 className="hidden"
                 onChange={(e) => pick(e.target.files?.[0] ?? null)}
               />

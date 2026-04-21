@@ -18,6 +18,10 @@ import type {
   BillingStatus,
   CompanyResearch,
   CoverLetter,
+  CvAnswer,
+  CvQuestion,
+  CvTone,
+  CvVersion,
   FollowUpChannel,
   FollowUpStage,
   InterviewPrepRound,
@@ -377,6 +381,130 @@ export function useRescoreJob() {
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: ['jobs'] });
       qc.invalidateQueries({ queryKey: ['jobs', 'detail', id] });
+    },
+  });
+}
+
+// --- Profile rebuild ------------------------------------------------------
+
+/**
+ * Wipe the user's profile + bump users.profile_version. After this,
+ * existing jobs / cover letters / CVs are marked as "generated against
+ * a previous profile" via their stored profile_version field.
+ *
+ * On success we invalidate EVERY relevant query — the user's next
+ * navigation shouldn't see stale score rings or letter panels rendered
+ * with pre-rebuild data.
+ */
+export function useRebuildProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<void>('/profile/rebuild', { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['profile'] });
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      qc.invalidateQueries({ queryKey: ['cv'] });
+      qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+    },
+  });
+}
+
+// --- CV generator ---------------------------------------------------------
+
+/**
+ * Remaining CV-generation credits for the current billing window.
+ * Separate from /billing/status so the CV page can read just this
+ * single number without pulling the full usage block.
+ */
+export function useCvQuota() {
+  return useQuery({
+    queryKey: ['cv', 'quota'],
+    queryFn: () => api<{ remaining: number | null }>('/cv/status/quota'),
+    // Short stale so the count refreshes after generating without a
+    // full page reload. Not zero — two consecutive page mounts within
+    // a few seconds shouldn't hammer the endpoint.
+    staleTime: 10_000,
+  });
+}
+
+/**
+ * List every CV version the user has generated, newest first. Mirrors
+ * how cover letters are listed — auto-open the latest in the UI.
+ */
+export function useCvVersions() {
+  return useQuery({
+    queryKey: ['cv', 'versions'],
+    queryFn: () => api<CvVersion[]>('/cv'),
+  });
+}
+
+/**
+ * Generate Phase-1 questions. Doesn't cost a credit; the route is
+ * Claude-backed so we bounce through a mutation (to match the
+ * request/response lifecycle) rather than a query.
+ */
+export function useCvPhaseOne() {
+  return useMutation<{ questions: CvQuestion[] }, Error, void>({
+    mutationFn: () =>
+      api<{ questions: CvQuestion[] }>('/cv/phase-one', { method: 'POST' }),
+  });
+}
+
+/**
+ * Generate Phase-2 CV rewrite. Costs one cv_generation credit.
+ * On success we invalidate the version list + quota + billing status.
+ */
+export function useCvPhaseTwo() {
+  const qc = useQueryClient();
+  return useMutation<
+    CvVersion,
+    Error,
+    {
+      answers: CvAnswer[];
+      tone: CvTone;
+      extra_notes: string;
+      regenerate_reason: string | null;
+    }
+  >({
+    mutationFn: (body) =>
+      api<CvVersion>('/cv', { method: 'POST', body }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cv', 'versions'] });
+      qc.invalidateQueries({ queryKey: ['cv', 'quota'] });
+      qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+    },
+  });
+}
+
+/**
+ * Save the user's inline edits to an existing CV version in place. No
+ * new version created — edits track against the existing row so the
+ * version list stays clean.
+ */
+export function useUpdateCvVersion() {
+  const qc = useQueryClient();
+  return useMutation<
+    CvVersion,
+    Error,
+    { id: string; content_markdown: string }
+  >({
+    mutationFn: ({ id, content_markdown }) =>
+      api<CvVersion>(`/cv/${id}`, {
+        method: 'PUT',
+        body: { content_markdown },
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cv', 'versions'] });
+    },
+  });
+}
+
+export function useDeleteCvVersion() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (id) => api<void>(`/cv/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cv', 'versions'] });
     },
   });
 }

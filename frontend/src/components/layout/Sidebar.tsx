@@ -4,12 +4,15 @@
  * nav item (via a leading dot).
  */
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Briefcase, UserCircle, LogOut, Sparkles } from 'lucide-react';
+import { LayoutDashboard, Briefcase, FileText, UserCircle, LogOut, Sparkles } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 
 const NAV = [
   { to: '/', label: 'Dashboard', Icon: LayoutDashboard, end: true },
   { to: '/jobs', label: 'Jobs', Icon: Briefcase, end: false },
+  // CV builder sits between Jobs and Profile so the candidate-output
+  // features (jobs + CV) cluster together at the top of the nav.
+  { to: '/cv', label: 'CV builder', Icon: FileText, end: false },
   { to: '/profile', label: 'Profile', Icon: UserCircle, end: false },
 ];
 

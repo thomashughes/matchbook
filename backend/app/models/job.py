@@ -48,3 +48,11 @@ class Job(Base, UUIDPkMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="saved")
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Snapshot of users.profile_version at the moment this job was last
+    # scored. When it differs from the user's current profile_version,
+    # the UI shows a stale-score banner prompting a re-score. NULL means
+    # the job has never been scored yet (no banner in that state).
+    scored_against_profile_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )

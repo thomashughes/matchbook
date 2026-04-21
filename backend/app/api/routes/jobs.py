@@ -121,6 +121,7 @@ def _detail_out(
         created_at=job.created_at,
         updated_at=job.updated_at,
         score=_score_out(score),
+        scored_against_profile_version=job.scored_against_profile_version,
         quota=quota or [],
     )
 
@@ -171,12 +172,17 @@ async def _job_quota(
 
 
 async def _score_and_persist(
-    job: Job, profile: Profile, db: AsyncSession
+    job: Job, profile: Profile, db: AsyncSession, user: User | None = None
 ) -> JobScore:
     """Run the scoring prompt, persist a JobScore row, update job fields.
 
     Also writes parsed salary info back onto the job — §3.4 asks that
     Claude extract and normalise the salary range during scoring.
+
+    The user argument is optional only for back-compat with the few call
+    sites that don't have a User handy; when provided, we stamp the
+    job's scored_against_profile_version so the UI can show a stale-
+    score banner when the user later rebuilds their profile.
     """
     profile_payload = profile.structured_data or {}
     result = await complete_json(
@@ -203,6 +209,13 @@ async def _score_and_persist(
         summary=result.summary,
     )
     db.add(row)
+
+    # Snapshot the profile version the score was produced against, so
+    # the UI can flag this score as stale if the user rebuilds their
+    # profile later. Falls back to current-value-on-job if no user
+    # passed — preserves "never-scored" (NULL) semantics.
+    if user is not None:
+        job.scored_against_profile_version = user.profile_version
 
     # Populate salary on the job itself so listings can show it without
     # joining through the score table.
@@ -306,7 +319,7 @@ async def create_job(
         db.add(job)
         await db.flush()  # assigns job.id before we use it for the score row
 
-        score = await _score_and_persist(job, profile, db)
+        score = await _score_and_persist(job, profile, db, user)
 
         await db.commit()
         await db.refresh(job)
@@ -372,7 +385,7 @@ async def create_from_pdf(
         db.add(job)
         await db.flush()
 
-        score = await _score_and_persist(job, profile, db)
+        score = await _score_and_persist(job, profile, db, user)
 
         await db.commit()
         await db.refresh(job)
@@ -537,7 +550,7 @@ async def rescore_job(
             status.HTTP_400_BAD_REQUEST, detail="No profile to score against."
         )
 
-    score = await _score_and_persist(job, profile, db)
+    score = await _score_and_persist(job, profile, db, user)
     await db.commit()
     await db.refresh(score)
     return _detail_out(job, score)

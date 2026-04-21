@@ -51,6 +51,7 @@ def _out(row: CoverLetter) -> CoverLetterOut:
         tone=row.tone,
         length=row.length,
         version=row.version,
+        profile_version=row.profile_version,
         created_at=row.created_at,
     )
 
@@ -118,6 +119,7 @@ async def generate(
             tone=body.tone,
             length=body.length,
             version=next_version,
+            profile_version=user.profile_version,
         )
         db.add(row)
         await db.commit()

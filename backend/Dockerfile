@@ -11,12 +11,25 @@ FROM python:3.12-slim
 #             (the "PDF/Word only" rule can't trust Content-Type or extension).
 # build-essential + libpq-dev → psycopg2 (used by Alembic sync) needs libpq headers.
 # curl → container healthchecks and debugging.
+# libpango / libcairo / libgdk-pixbuf / shared-mime-info → WeasyPrint runtime
+#   for the CV PDF exporter. Without these the import succeeds but rendering
+#   blows up at request time with a CFFI error.
+# fonts-liberation / fonts-dejavu → serif + sans-serif families with wide
+#   Unicode coverage. Without them WeasyPrint falls back to pixelated glyphs
+#   or skips non-ASCII characters silently, producing a broken CV.
 # Clean the apt lists in the same RUN so they don't bloat the image layer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     build-essential \
     libpq-dev \
     curl \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libcairo2 \
+    libgdk-pixbuf-2.0-0 \
+    shared-mime-info \
+    fonts-liberation \
+    fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

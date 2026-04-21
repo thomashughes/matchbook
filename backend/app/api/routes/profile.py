@@ -21,6 +21,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import Response
+from sqlalchemy import update
+
 from app.api.deps import (
     get_current_user,
     get_verified_user,
@@ -206,7 +209,7 @@ async def submit_answers(
 
     await db.commit()
     await db.refresh(profile)
-    return _profile_out(profile)
+    return _profile_out(profile, user)
 
 
 # --- 4. Get / patch -------------------------------------------------------
@@ -221,7 +224,7 @@ async def get_profile(
     profile = result.scalar_one_or_none()
     if profile is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No profile yet.")
-    return _profile_out(profile)
+    return _profile_out(profile, user)
 
 
 @router.patch("", response_model=ProfileOut)
@@ -244,10 +247,17 @@ async def patch_profile(
 
     await db.commit()
     await db.refresh(profile)
-    return _profile_out(profile)
+    return _profile_out(profile, user)
 
 
-def _profile_out(p: Profile) -> ProfileOut:
+def _profile_out(p: Profile, user: User | None = None) -> ProfileOut:
+    # onboarding_complete is True iff the "answers" phase has produced
+    # a generated-profile block. structured_data itself exists from the
+    # CV parse step (phase 1 of onboarding); structured_data.generated
+    # only exists after step 3 (the answers step).
+    complete = bool(
+        p.structured_data and p.structured_data.get("generated")
+    )
     return ProfileOut(
         id=p.id,
         seniority_level=p.seniority_level,
@@ -259,4 +269,68 @@ def _profile_out(p: Profile) -> ProfileOut:
         notice_period=p.notice_period,
         career_goals=p.career_goals,
         structured_data=p.structured_data,
+        onboarding_complete=complete,
+        # Fall back to 1 if a User wasn't passed — only happens during
+        # the upload flow where the caller doesn't need the version.
+        profile_version=(user.profile_version if user else 1),
     )
+
+
+# --- 5. Rebuild -----------------------------------------------------------
+
+
+@router.post("/rebuild", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def rebuild(
+    user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset the user's profile so they can start onboarding fresh.
+
+    What happens:
+        - All ProfileAnswer rows for this user are deleted (the Q&A
+          inputs to the previous profile generation).
+        - Profile row is wiped of CV content + structured_data + typed
+          fields. The row itself is kept (foreign keys from jobs/etc
+          don't depend on it, but replacing a row is unnecessary work).
+        - users.profile_version is incremented. This is the signal the
+          UI reads to flag existing jobs/cover_letters/cv_versions as
+          "generated against a previous profile".
+        - jobs, cover_letters, cv_versions are left intact. Their
+          profile_version column now lags the user's and the UI reacts.
+
+    Why not cascade-delete dependent AI outputs:
+        Losing work on rebuild would be punishing — especially for users
+        who just want a fresh CV-parse without throwing away weeks of
+        job tracking. The stale banner is the right UX compromise.
+    """
+    # Clear ProfileAnswer rows — they'll be regenerated for the new CV.
+    await db.execute(delete(ProfileAnswer).where(ProfileAnswer.user_id == user.id))
+
+    # Wipe profile content. Keep the row (and its id) so any dangling
+    # references aren't broken.
+    result = await db.execute(select(Profile).where(Profile.user_id == user.id))
+    profile = result.scalar_one_or_none()
+    if profile is not None:
+        profile.cv_raw_text = None
+        profile.cv_file_path = None
+        profile.structured_data = None
+        profile.skills_hard = None
+        profile.skills_soft = None
+        profile.seniority_level = None
+        profile.salary_min = None
+        profile.salary_ideal = None
+        profile.location_preferences = None
+        profile.remote_preference = None
+        profile.notice_period = None
+        profile.career_goals = None
+
+    # Bump profile_version. This is a direct UPDATE rather than
+    # user.profile_version += 1 + commit so two concurrent rebuild
+    # clicks can't race into the same version number.
+    await db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(profile_version=User.profile_version + 1)
+    )
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

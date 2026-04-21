@@ -27,6 +27,7 @@ from app.api.routes import auth as auth_routes
 from app.api.routes import billing as billing_routes
 from app.api.routes import company_research as company_research_routes
 from app.api.routes import cover_letters as cover_letters_routes
+from app.api.routes import cv as cv_routes
 from app.api.routes import jobs as jobs_routes
 from app.api.routes import profile as profile_routes
 from app.core.config import get_settings
@@ -64,6 +65,7 @@ app.include_router(cover_letters_routes.router, prefix=API_V1)
 app.include_router(ai_outputs_routes.router, prefix=API_V1)
 app.include_router(company_research_routes.router, prefix=API_V1)
 app.include_router(billing_routes.router, prefix=API_V1)
+app.include_router(cv_routes.router, prefix=API_V1)
 
 
 @app.exception_handler(RequestValidationError)

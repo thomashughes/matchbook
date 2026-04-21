@@ -93,6 +93,10 @@ class JobDetailOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     score: JobScoreOut | None
+    # Profile version this job was last scored against. NULL if never
+    # scored. UI compares against user.profile_version to show a
+    # stale-score banner when they differ after a profile rebuild.
+    scored_against_profile_version: int | None = None
     # Per-kind remaining counts for the five per-job resources
     # (draft_*, cover_letter). Present on every JobDetailOut so every
     # surface that renders a job has the data it needs to caption its

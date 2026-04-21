@@ -58,3 +58,17 @@ python-multipart==0.0.12
 # signature verification. Pinned to a recent stable line compatible with
 # the 2024-*/2025-* API versions used by the current Stripe dashboard.
 stripe==11.1.1
+
+# CV generator — Markdown → PDF pipeline.
+# - markdown-it-py: Commonmark parser with HTML rendering disabled (we
+#   never trust user Markdown to be HTML-safe). Used in services/cv_pdf.py.
+# - weasyprint: Pure-Python HTML/CSS → PDF. Needs OS packages (pango,
+#   cairo, gdk-pixbuf, shared-mime-info, fonts) installed in the
+#   Dockerfile for correct rendering.
+# weasyprint + pydyf pinned together; pydyf exposes the low-level PDF
+# stream primitives weasyprint layers on top of, and subtle version
+# drift between them fails at render time ("'super' object has no
+# attribute 'transform'") rather than at import. Keep these in lockstep.
+markdown-it-py==3.0.0
+weasyprint==60.2
+pydyf==0.10.0

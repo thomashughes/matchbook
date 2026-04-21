@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, AlertTriangle, CheckCircle2, XCircle, RefreshCw, Trash2, ExternalLink } from 'lucide-react';
-import { useJob, usePatchJob, useRescoreJob, useDeleteJob } from '@/api/hooks';
+import { useJob, usePatchJob, useProfile, useRescoreJob, useDeleteJob } from '@/api/hooks';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { ScoreRadar } from '@/components/ui/ScoreRadar';
 import { StatusBadge } from '@/components/ui/StatusBadge';
@@ -34,6 +34,9 @@ export function JobDetailPage() {
   const patch = usePatchJob(id ?? '');
   const rescore = useRescoreJob();
   const del = useDeleteJob();
+  // Current profile version — compared to job.scored_against_profile_version
+  // to decide whether to render the stale-score banner.
+  const prof = useProfile();
 
   const [notes, setNotes] = useState('');
   const [showRaw, setShowRaw] = useState(false);
@@ -61,6 +64,15 @@ export function JobDetailPage() {
 
   const j = job.data;
   const s = j.score;
+  // Stale-score signal: job was scored against an older profile version.
+  // We only render a banner if both the score exists AND the job has a
+  // scored_against_profile_version stamp (older rows predate the
+  // migration; treat those as "unknown" rather than stale).
+  const scoreStale =
+    !!s &&
+    j.scored_against_profile_version != null &&
+    prof.data != null &&
+    j.scored_against_profile_version !== prof.data.profile_version;
 
   return (
     <div className="space-y-6">
@@ -90,6 +102,26 @@ export function JobDetailPage() {
           </button>
         </div>
       </div>
+
+      {scoreStale && (
+        <div
+          className="rounded-lg px-3 py-2 text-sm flex items-center gap-2"
+          style={{ background: 'var(--parchment)' }}
+        >
+          <span className="text-rust font-medium">Score may be out of date.</span>
+          <span className="text-ink-2">
+            This job was scored against a previous version of your
+            profile. Re-score to refresh.
+          </span>
+          <button
+            className="ml-auto mb-btn-secondary text-xs"
+            onClick={() => id && rescore.mutate(id)}
+            disabled={rescore.isPending}
+          >
+            {rescore.isPending ? 'Re-scoring…' : 'Re-score now'}
+          </button>
+        </div>
+      )}
 
       <div className="mb-card">
         <div className="flex items-start gap-5">

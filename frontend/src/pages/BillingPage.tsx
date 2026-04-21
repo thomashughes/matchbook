@@ -23,6 +23,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   draft_interview_prep: 'Interview prep sheets',
   cover_letter: 'Cover letters',
   ai_job_search: 'AI job searches',
+  cv_generation: 'CV generations',
 };
 
 function formatResetDate(iso: string): string {

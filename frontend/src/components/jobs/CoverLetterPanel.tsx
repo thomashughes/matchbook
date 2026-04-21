@@ -23,6 +23,7 @@ import {
   useCoverLetters,
   useDeleteCoverLetter,
   useGenerateCoverLetter,
+  useProfile,
 } from '@/api/hooks';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
 import { QuotaCaption } from './QuotaCaption';
@@ -48,6 +49,10 @@ export function CoverLetterPanel({ jobId }: { jobId: string }) {
   const list = useCoverLetters(jobId);
   const generate = useGenerateCoverLetter(jobId);
   const remove = useDeleteCoverLetter(jobId);
+  // Profile version query — compared to each letter's snapshotted
+  // profile_version to show a "previous profile" pill on old letters.
+  const prof = useProfile();
+  const currentProfileVersion = prof.data?.profile_version ?? 1;
 
   const letters = list.data ?? [];
 
@@ -133,6 +138,7 @@ export function CoverLetterPanel({ jobId }: { jobId: string }) {
               key={l.id}
               letter={l}
               defaultOpen={i === 0}
+              stale={l.profile_version !== currentProfileVersion}
               onDelete={() => remove.mutate(l.id)}
             />
           ))}
@@ -153,10 +159,12 @@ export function CoverLetterPanel({ jobId }: { jobId: string }) {
 function LetterCard({
   letter,
   defaultOpen,
+  stale,
   onDelete,
 }: {
   letter: import('@/types/models').CoverLetter;
   defaultOpen: boolean;
+  stale: boolean;
   onDelete: () => void;
 }) {
   // Only the latest version auto-expands. Older versions start collapsed
@@ -193,6 +201,17 @@ function LetterCard({
           <span className="capitalize">{letter.length}</span>
           <span>·</span>
           <span>{new Date(letter.created_at).toLocaleString()}</span>
+          {stale && (
+            <span
+              className="ml-1 px-1.5 py-0.5 rounded text-[10px]"
+              style={{
+                background: 'var(--rust-light, #f7e3d9)',
+                color: 'var(--rust, #b0552d)',
+              }}
+            >
+              Previous profile
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <button

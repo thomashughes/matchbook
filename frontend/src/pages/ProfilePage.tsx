@@ -7,8 +7,10 @@
  * and is shown read-only at the bottom for transparency.
  */
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { AlertTriangle } from 'lucide-react';
 import { api } from '@/api/client';
-import { useProfile } from '@/api/hooks';
+import { useProfile, useRebuildProfile } from '@/api/hooks';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Profile } from '@/types/models';
 
@@ -122,6 +124,95 @@ export function ProfilePage() {
           <button className="mb-btn-primary" onClick={save} disabled={saving}>
             {saving ? 'Saving…' : 'Save changes'}
           </button>
+        </div>
+      </div>
+
+      <RebuildSection />
+    </div>
+  );
+}
+
+/**
+ * Danger-zone block: lets the user throw out their current profile
+ * and re-upload a fresh CV + answer questions again. Existing jobs,
+ * cover letters, and CVs persist — they just get marked "generated
+ * against a previous profile" via the stale banners.
+ */
+function RebuildSection() {
+  const nav = useNavigate();
+  const rebuild = useRebuildProfile();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  async function doRebuild() {
+    await rebuild.mutateAsync();
+    nav('/onboarding/cv');
+  }
+
+  return (
+    <div
+      className="rounded-xl px-6 py-5"
+      style={{
+        background: 'var(--card)',
+        border: '0.5px solid var(--border)',
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle
+          size={20}
+          className="shrink-0 mt-0.5"
+          style={{ color: 'var(--rust, #b0552d)' }}
+        />
+        <div className="flex-1">
+          <div className="text-base font-semibold text-ink mb-1">
+            Rebuild your profile
+          </div>
+          <p className="text-sm text-ink-2 mb-3">
+            Starts onboarding from scratch: re-upload your CV and answer
+            the clarifying questions again. Your saved jobs, cover
+            letters, and CVs stay in place but will be flagged as being
+            based on your previous profile, so their scores may be out
+            of date.
+          </p>
+
+          {!confirmOpen ? (
+            <button
+              className="mb-btn-secondary"
+              onClick={() => setConfirmOpen(true)}
+            >
+              Rebuild profile
+            </button>
+          ) : (
+            <div
+              className="rounded-lg px-3 py-3 flex items-center gap-3"
+              style={{ background: 'var(--parchment)' }}
+            >
+              <span className="text-sm text-ink">
+                Are you sure? This can't be undone.
+              </span>
+              <div className="ml-auto flex gap-2">
+                <button
+                  className="mb-btn-secondary text-xs"
+                  onClick={() => setConfirmOpen(false)}
+                  disabled={rebuild.isPending}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="mb-btn-primary text-xs"
+                  onClick={doRebuild}
+                  disabled={rebuild.isPending}
+                >
+                  {rebuild.isPending ? 'Rebuilding…' : 'Yes, rebuild'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {rebuild.isError && (
+            <div className="mt-3 text-sm text-rust">
+              Couldn't rebuild — please try again.
+            </div>
+          )}
         </div>
       </div>
     </div>

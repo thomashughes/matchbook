@@ -25,7 +25,7 @@ import { useAuthStore } from '@/stores/auth';
 const BASE = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
   // Public endpoints (login, register) should not trigger the refresh
   // dance on 401 — there's nothing to refresh to.

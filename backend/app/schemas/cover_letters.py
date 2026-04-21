@@ -27,4 +27,8 @@ class CoverLetterOut(BaseModel):
     tone: str
     length: str
     version: int
+    # Snapshot of user.profile_version at generation time. Lets the UI
+    # mark the letter as "generated against a previous profile" once the
+    # user has rebuilt their profile and moved on to version N+1.
+    profile_version: int = 1
     created_at: datetime

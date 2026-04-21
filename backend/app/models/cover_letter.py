@@ -40,6 +40,12 @@ class CoverLetter(Base, UUIDPkMixin):
     # off to avoid locking pain on concurrent generation.
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
+    # Snapshot of users.profile_version at generation time. Drives the
+    # "generated against a previous profile" stale banner after a rebuild.
+    profile_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

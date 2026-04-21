@@ -103,6 +103,11 @@ RESOURCES: dict[str, Resource] = {
     "draft_interview_prep": Resource(free=3,  paid=10, scope="job"),
     "cover_letter":         Resource(free=3,  paid=10, scope="job"),
     "ai_job_search":        Resource(free=1,  paid=5,  scope="user"),
+    # CV generator is paid-only: free=0 means the quota check fails for
+    # free users with the standard 402 response, which the frontend turns
+    # into the Upgrade CTA. Paid users get 2/cycle — enough to try again
+    # after a disappointing first draft but scarce enough to stay cheap.
+    "cv_generation":        Resource(free=0,  paid=2,  scope="user"),
 }
 
 

@@ -20,6 +20,7 @@ import { JobsPage } from './pages/JobsPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { BillingPage } from './pages/BillingPage';
+import { CvBuilderPage } from './pages/CvBuilderPage';
 import { AppShell } from './components/layout/AppShell';
 import { useAuthStore } from './stores/auth';
 import { useProfile } from './api/hooks';
@@ -72,6 +73,7 @@ export default function App() {
       <Route path="/jobs/:id" element={<Shell><JobDetailPage /></Shell>} />
       <Route path="/profile" element={<Shell><ProfilePage /></Shell>} />
       <Route path="/billing" element={<Shell><BillingPage /></Shell>} />
+      <Route path="/cv" element={<Shell><CvBuilderPage /></Shell>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

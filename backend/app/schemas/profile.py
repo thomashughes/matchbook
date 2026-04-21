@@ -38,6 +38,14 @@ class ProfileOut(BaseModel):
     notice_period: str | None
     career_goals: str | None
     structured_data: dict | None
+    # True once the user has run through CV upload AND clarifying-question
+    # answers (i.e. structured_data.generated exists). Drives the
+    # "Continue onboarding" top-bar banner: shown when False.
+    onboarding_complete: bool = False
+    # Current profile version; every rebuild increments this on the user
+    # row. Frontend compares to per-artefact profile_version to show the
+    # "generated against a previous profile" stale banners.
+    profile_version: int = 1
 
 
 class ProfilePatch(BaseModel):
