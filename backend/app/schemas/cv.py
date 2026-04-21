@@ -36,13 +36,24 @@ class Phase2Answer(BaseModel):
     answer: str
 
 
+class CvCustomContactItem(BaseModel):
+    """Free-form contact row the candidate added alongside the fixed
+    fields. `label` is shown to the prompt as the key (e.g. 'Stack
+    Overflow', 'Personal blog'); `value` is the actual URL or
+    identifier. We trust the label as-is rather than normalising,
+    because hiring managers read the label verbatim on the CV."""
+
+    label: str
+    value: str
+
+
 class CvContact(BaseModel):
     """Structured contact information collected alongside Phase-1
-    answers. Each field is optional — the candidate can skip any line.
-    Only fields with non-empty values are sent to Claude and rendered
-    in the finished CV. The set is fixed in the frontend form
-    (email/phone/location/linkedin/github/portfolio) — Claude does not
-    ask about these separately."""
+    answers. The six named fields are the fixed picker in the UI;
+    `extra` is a list of user-added labelled contacts for things the
+    picker doesn't cover (Stack Overflow profile, personal blog,
+    Instagram for creative roles, etc). Only non-empty values are sent
+    to Claude; Claude does not ask about these separately."""
 
     email: str | None = None
     phone: str | None = None
@@ -50,6 +61,7 @@ class CvContact(BaseModel):
     linkedin: str | None = None
     github: str | None = None
     portfolio: str | None = None
+    extra: list[CvCustomContactItem] = []
 
 
 class Phase2In(BaseModel):

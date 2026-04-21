@@ -174,18 +174,26 @@ async def generate(
 
         # Only pass contact fields the candidate actually filled in, so
         # Claude doesn't render "None" or empty entries in the contact
-        # line. exclude_none strips both missing and explicitly-null
-        # fields; exclude_defaults would over-prune "" which the UI
-        # uses to mean "skipped".
-        contact_dict = (
-            {
-                k: v
-                for k, v in body.contact.model_dump().items()
-                if v and str(v).strip()
-            }
-            if body.contact
-            else None
-        )
+        # line. Build the dict in two steps so we can treat the named
+        # fields (strings) and the `extra` list (custom-labelled
+        # items) differently.
+        contact_dict: dict | None = None
+        if body.contact:
+            raw = body.contact.model_dump()
+            cleaned: dict = {}
+            for k, v in raw.items():
+                if k == "extra":
+                    items = [
+                        {"label": it["label"].strip(), "value": it["value"].strip()}
+                        for it in (v or [])
+                        if it.get("label", "").strip() and it.get("value", "").strip()
+                    ]
+                    if items:
+                        cleaned["extra"] = items
+                else:
+                    if v and str(v).strip():
+                        cleaned[k] = str(v).strip()
+            contact_dict = cleaned or None
 
         md = await complete_text(
             system=cv_prompt.PHASE_TWO_SYSTEM,

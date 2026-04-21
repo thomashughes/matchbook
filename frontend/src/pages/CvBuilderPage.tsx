@@ -22,10 +22,12 @@ import {
   Download,
   FileText,
   Loader2,
+  Plus,
   RefreshCw,
   Sparkles,
   Trash2,
   UserCog,
+  X,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
@@ -78,6 +80,11 @@ const CONTACT_FIELDS: Array<{
 
 type ContactState = Record<ContactKey, { value: string; include: boolean }>;
 
+// Custom rows the user added themselves — same include flag so a user
+// can stage an entry, toggle it off, and keep it around without it
+// being rendered on the CV.
+type CustomRow = { label: string; value: string; include: boolean };
+
 function blankContact(): ContactState {
   const obj = {} as ContactState;
   for (const f of CONTACT_FIELDS) obj[f.key] = { value: '', include: true };
@@ -104,6 +111,7 @@ export function CvBuilderPage() {
   const [extraNotes, setExtraNotes] = useState('');
   const [tone, setTone] = useState<CvTone>('professional');
   const [contact, setContact] = useState<ContactState>(blankContact());
+  const [customContacts, setCustomContacts] = useState<CustomRow[]>([]);
   const [regenOpen, setRegenOpen] = useState(false);
 
   // Auto-switch to the preview of the latest version once data loads.
@@ -144,6 +152,7 @@ export function CvBuilderPage() {
       setAnswers(initial);
       setExtraNotes('');
       setContact(blankContact());
+      setCustomContacts([]);
       setPhase('questions');
     } catch (e) {
       console.error(e);
@@ -154,12 +163,21 @@ export function CvBuilderPage() {
     // Build the contact object: only include fields with include=true
     // AND a non-empty value. Empty-but-included fields are treated as
     // skipped (Claude will omit them from the finished CV).
-    const contactPayload: Record<string, string> = {};
+    const contactPayload: Record<string, unknown> = {};
     for (const f of CONTACT_FIELDS) {
       const c = contact[f.key];
       if (c.include && c.value.trim()) {
         contactPayload[f.key] = c.value.trim();
       }
+    }
+    // Custom rows: keep only those with both a label AND a value, and
+    // where the user hasn't toggled skip. We pass as `extra` — matches
+    // the backend CvContact.extra list shape.
+    const customItems = customContacts
+      .filter((c) => c.include && c.label.trim() && c.value.trim())
+      .map((c) => ({ label: c.label.trim(), value: c.value.trim() }));
+    if (customItems.length > 0) {
+      contactPayload.extra = customItems;
     }
 
     const body = {
@@ -266,6 +284,7 @@ export function CvBuilderPage() {
           extraNotes={extraNotes}
           tone={tone}
           contact={contact}
+          customContacts={customContacts}
           onAnswerChange={(id, v) => setAnswers((a) => ({ ...a, [id]: v }))}
           onExtraChange={setExtraNotes}
           onToneChange={setTone}
@@ -274,6 +293,20 @@ export function CvBuilderPage() {
           }
           onContactSkip={(k, skipped) =>
             setContact((s) => ({ ...s, [k]: { ...s[k], include: !skipped } }))
+          }
+          onAddCustomContact={() =>
+            setCustomContacts((arr) => [
+              ...arr,
+              { label: '', value: '', include: true },
+            ])
+          }
+          onRemoveCustomContact={(i) =>
+            setCustomContacts((arr) => arr.filter((_, idx) => idx !== i))
+          }
+          onCustomContactChange={(i, patch) =>
+            setCustomContacts((arr) =>
+              arr.map((row, idx) => (idx === i ? { ...row, ...patch } : row)),
+            )
           }
           onCancel={() => setPhase('idle')}
           onSubmit={() => submit(null)}
@@ -419,11 +452,15 @@ function QuestionsForm({
   extraNotes,
   tone,
   contact,
+  customContacts,
   onAnswerChange,
   onExtraChange,
   onToneChange,
   onContactValue,
   onContactSkip,
+  onAddCustomContact,
+  onRemoveCustomContact,
+  onCustomContactChange,
   onCancel,
   onSubmit,
   busy,
@@ -433,11 +470,15 @@ function QuestionsForm({
   extraNotes: string;
   tone: CvTone;
   contact: ContactState;
+  customContacts: CustomRow[];
   onAnswerChange: (id: string, value: string) => void;
   onExtraChange: (v: string) => void;
   onToneChange: (t: CvTone) => void;
   onContactValue: (k: ContactKey, v: string) => void;
   onContactSkip: (k: ContactKey, skipped: boolean) => void;
+  onAddCustomContact: () => void;
+  onRemoveCustomContact: (index: number) => void;
+  onCustomContactChange: (index: number, patch: Partial<CustomRow>) => void;
   onCancel: () => void;
   onSubmit: () => void;
   busy: boolean;
@@ -460,7 +501,8 @@ function QuestionsForm({
 
       {/* Contact-info block — always first, so the candidate can see
           exactly what will appear in the contact line of the finished
-          CV. Each field has a "skip" toggle. */}
+          CV. Fixed fields + custom additions for anything the picker
+          doesn't cover (Stack Overflow, personal blog, etc). */}
       <div>
         <div className="mb-label mb-2">Contact details</div>
         <div className="text-xs text-ink-muted mb-3">
@@ -494,7 +536,61 @@ function QuestionsForm({
               </div>
             );
           })}
+
+          {/* User-added custom contact rows. Label + value + skip per
+              row. The X button removes the row entirely. */}
+          {customContacts.map((row, i) => (
+            <div key={i} className="flex items-center gap-3">
+              <input
+                className="mb-input w-24 shrink-0 text-xs"
+                placeholder="Label"
+                value={row.label}
+                onChange={(e) =>
+                  onCustomContactChange(i, { label: e.target.value })
+                }
+                disabled={!row.include}
+                style={!row.include ? { opacity: 0.5 } : undefined}
+              />
+              <input
+                className="mb-input flex-1"
+                placeholder="e.g. stackoverflow.com/users/..."
+                value={row.value}
+                onChange={(e) =>
+                  onCustomContactChange(i, { value: e.target.value })
+                }
+                disabled={!row.include}
+                style={!row.include ? { opacity: 0.5 } : undefined}
+              />
+              <label className="text-xs text-ink-muted flex items-center gap-1 shrink-0">
+                <input
+                  type="checkbox"
+                  checked={!row.include}
+                  onChange={(e) =>
+                    onCustomContactChange(i, { include: !e.target.checked })
+                  }
+                />
+                skip
+              </label>
+              <button
+                type="button"
+                className="p-1.5 rounded hover:bg-rust-light text-ink-3 hover:text-rust shrink-0"
+                onClick={() => onRemoveCustomContact(i)}
+                title="Remove"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
         </div>
+
+        <button
+          type="button"
+          className="mt-3 text-xs text-teal inline-flex items-center gap-1 hover:underline"
+          onClick={onAddCustomContact}
+        >
+          <Plus size={12} />
+          Add another contact (e.g. Stack Overflow, blog, Instagram)
+        </button>
       </div>
 
       {/* Claude's clarifying questions */}
