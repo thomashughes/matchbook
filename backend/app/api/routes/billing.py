@@ -286,8 +286,19 @@ async def _get_user_for_event(
 
 
 def _period_end(sub: dict[str, Any]) -> datetime | None:
-    """Extract current_period_end from a subscription object, UTC-aware."""
+    """Extract current_period_end from a subscription object, UTC-aware.
+
+    As of API version 2026-03-25.dahlia, Stripe moved current_period_end
+    off the top-level Subscription onto each subscription item (billing
+    cycles can now differ per item). We read the top-level field first
+    for older API versions, then fall back to the first item for newer
+    ones. Without this fallback, webhooks silently leave the column null.
+    """
     ts = sub.get("current_period_end")
+    if ts is None:
+        items = (sub.get("items") or {}).get("data") or []
+        if items:
+            ts = items[0].get("current_period_end")
     if ts is None:
         return None
     return datetime.fromtimestamp(int(ts), tz=timezone.utc)
