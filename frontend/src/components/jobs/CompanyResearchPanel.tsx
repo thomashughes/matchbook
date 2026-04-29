@@ -34,6 +34,7 @@ import {
 } from '@/api/hooks';
 import type { CompanyResearch } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { useUserQuota } from '@/api/quota';
 import { UserQuotaCaption } from './UserQuotaCaption';
 
 export function CompanyResearchPanel({
@@ -45,6 +46,7 @@ export function CompanyResearchPanel({
 }) {
   const query = useCompanyResearch(jobId);
   const generate = useGenerateCompanyResearch(jobId);
+  const quota = useUserQuota('company_research');
 
   const status404 =
     query.isError && query.error instanceof ApiError && query.error.status === 404;
@@ -111,9 +113,10 @@ export function CompanyResearchPanel({
             sharp questions to probe. Uses web search; takes ~30 seconds.
           </p>
           <button
-            className="mb-btn-primary flex items-center gap-2"
+            className="mb-btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={() => generate.mutate()}
-            disabled={generate.isPending}
+            disabled={generate.isPending || quota.atLimit}
+            title={quota.atLimit ? 'No researches left this month — upgrade for unlimited' : undefined}
           >
             <Globe size={14} />
             Research company
@@ -146,6 +149,7 @@ export function CompanyResearchPanel({
           data={query.data}
           onRefresh={() => generate.mutate()}
           refreshing={generate.isPending}
+          atLimit={quota.atLimit}
         />
       )}
 
@@ -197,10 +201,12 @@ function BriefingView({
   data,
   onRefresh,
   refreshing,
+  atLimit,
 }: {
   data: CompanyResearch;
   onRefresh: () => void;
   refreshing: boolean;
+  atLimit: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -236,9 +242,9 @@ function BriefingView({
           </button>
           <button
             onClick={onRefresh}
-            className="mb-btn-ghost py-1 px-2 text-xs flex items-center gap-1"
-            disabled={refreshing}
-            title="Run a fresh research pass"
+            className="mb-btn-ghost py-1 px-2 text-xs flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={refreshing || atLimit}
+            title={atLimit ? 'No researches left this month — upgrade for unlimited' : 'Run a fresh research pass'}
           >
             <RefreshCw
               size={12}

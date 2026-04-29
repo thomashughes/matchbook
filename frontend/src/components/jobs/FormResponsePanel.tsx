@@ -23,6 +23,7 @@ import {
 } from '@/api/hooks';
 import type { JobAIOutput } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { useJobQuota } from '@/api/quota';
 import { QuotaCaption } from './QuotaCaption';
 
 // Keep the card-chip row readable when the question is long. 60 chars
@@ -47,9 +48,11 @@ export function FormResponsePanel({ jobId }: { jobId: string }) {
   const list = useAIOutputs(jobId, 'form_response');
   const generate = useGenerateFormResponse(jobId);
   const remove = useDeleteAIOutput(jobId, 'form_response');
+  const quota = useJobQuota(jobId, 'draft_form_response');
 
   const answers = list.data ?? [];
-  const canGenerate = question.trim().length >= 3 && !generate.isPending;
+  const canGenerate =
+    question.trim().length >= 3 && !generate.isPending && !quota.atLimit;
 
   const count = answers.length;
   const hint = list.isLoading
@@ -114,9 +117,10 @@ export function FormResponsePanel({ jobId }: { jobId: string }) {
 
           <div className="ml-auto">
             <button
-              className="mb-btn-primary flex items-center gap-2"
+              className="mb-btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={submit}
               disabled={!canGenerate}
+              title={quota.atLimit ? 'No response drafts left this month — upgrade for unlimited' : undefined}
             >
               {generate.isPending ? (
                 <Loader2 size={14} className="animate-spin" />

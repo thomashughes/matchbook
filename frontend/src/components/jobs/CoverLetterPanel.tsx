@@ -26,6 +26,7 @@ import {
   useProfile,
 } from '@/api/hooks';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { useJobQuota } from '@/api/quota';
 import { QuotaCaption } from './QuotaCaption';
 
 type Tone = 'formal' | 'conversational';
@@ -49,6 +50,7 @@ export function CoverLetterPanel({ jobId }: { jobId: string }) {
   const list = useCoverLetters(jobId);
   const generate = useGenerateCoverLetter(jobId);
   const remove = useDeleteCoverLetter(jobId);
+  const quota = useJobQuota(jobId, 'cover_letter');
   // Profile version query — compared to each letter's snapshotted
   // profile_version to show a "previous profile" pill on old letters.
   const prof = useProfile();
@@ -103,9 +105,10 @@ export function CoverLetterPanel({ jobId }: { jobId: string }) {
 
         <div className="ml-auto self-end">
           <button
-            className="mb-btn-primary flex items-center gap-2"
+            className="mb-btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={() => generate.mutate({ tone, length })}
-            disabled={generate.isPending}
+            disabled={generate.isPending || quota.atLimit}
+            title={quota.atLimit ? 'No cover letters left this month — upgrade for unlimited' : undefined}
           >
             {generate.isPending ? (
               <Loader2 size={14} className="animate-spin" />

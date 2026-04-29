@@ -13,6 +13,7 @@ import { useProfile, useJobs } from '@/api/hooks';
 import { JobCard } from '@/components/ui/JobCard';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useAppShell } from '@/components/layout/AppShell';
+import { FunnelSection } from '@/components/dashboard/FunnelSection';
 
 export function DashboardPage() {
   const nav = useNavigate();
@@ -31,7 +32,10 @@ export function DashboardPage() {
     .sort((a, b) => (b.total_score ?? 0) - (a.total_score ?? 0))
     .slice(0, 5);
   const best = topFive[0];
-  const interviewCount = list.filter((j) => j.status === 'interviewing').length;
+  // Three interview rounds collapse into a single "interviewing" KPI —
+  // the funnel below breaks them out individually.
+  const interviewStatuses = new Set(['first_interview', 'second_interview', 'final_interview']);
+  const interviewCount = list.filter((j) => interviewStatuses.has(j.status)).length;
 
   return (
     <div className="space-y-6">
@@ -41,6 +45,8 @@ export function DashboardPage() {
         </div>
         <p className="text-sm text-ink-2 mt-1">Here's where things stand today.</p>
       </div>
+
+      <FunnelSection />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Kpi

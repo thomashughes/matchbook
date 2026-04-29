@@ -66,6 +66,10 @@ LIMIT_AUTH_UNAUTH = RateLimit("auth_unauth", limit=20, window=60)
 LIMIT_LOGIN = RateLimit("login", limit=10, window=60)
 LIMIT_AI = RateLimit("ai", limit=60, window=60)
 LIMIT_CV_UPLOAD = RateLimit("cv_upload", limit=5, window=60 * 60 * 24)
+# Resend-verification is keyed BY EMAIL (not IP) so a single inbox can't
+# be carpet-bombed even from rotating addresses. 3/hour is more than
+# enough for a real user retrying — anything beyond that is abuse.
+LIMIT_RESEND_VERIFICATION = RateLimit("resend_verify", limit=3, window=60 * 60)
 
 
 async def check_rate_limit(identifier: str, rule: RateLimit) -> dict[str, str]:

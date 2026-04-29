@@ -1,28 +1,28 @@
 /**
  * StatusBadge — pill for the job application status.
  *
- * Each status gets its own distinct colour so moving a job through the
- * pipeline feels like visible progress rather than shades of the same
- * accent. Neutral → warm → cool → strong-positive / negative:
- *
- *   saved        — parchment / ink-3 (neutral, "not yet acted on")
- *   applied      — gold               (warm, active)
- *   interviewing — blue               (cool, mid-pipeline)
- *   offer        — teal               (strong positive outcome)
- *   rejected     — rust               (negative terminal state)
- *
- * Blue for interviewing is an addition outside the default palette —
- * we need a fifth distinct hue and a muted blue sits naturally next to
- * the warm accents without stealing attention from teal (offer).
+ * Each stage gets a distinct hue so moving a job through the pipeline
+ * feels like visible progress. The three interview rounds share the
+ * same blue family and deepen as you advance — the user reads "darker
+ * blue = further along" without needing to parse the label. Terminal
+ * states (rejected/withdrawn/declined/ghosted) use warm-grey/rust
+ * variants so they don't compete with the in-flight stages for
+ * attention.
  */
 import type { JobStatus } from '@/types/models';
 
 const COLOURS: Record<JobStatus, { bg: string; fg: string; label: string }> = {
-  saved:        { bg: 'bg-parchment',   fg: 'text-ink-2',        label: 'Saved' },
-  applied:      { bg: 'bg-gold-light',  fg: 'text-gold',         label: 'Applied' },
-  interviewing: { bg: 'bg-[#dbe7f3]',   fg: 'text-[#2b5d89]',    label: 'Interviewing' },
-  offer:        { bg: 'bg-teal-light',  fg: 'text-teal',         label: 'Offer' },
-  rejected:     { bg: 'bg-rust-light',  fg: 'text-rust',         label: 'Rejected' },
+  saved:            { bg: 'bg-parchment',   fg: 'text-ink-2',     label: 'Saved' },
+  applied:          { bg: 'bg-gold-light',  fg: 'text-gold',      label: 'Applied' },
+  first_interview:  { bg: 'bg-[#dbe7f3]',   fg: 'text-[#2b5d89]', label: 'First interview' },
+  second_interview: { bg: 'bg-[#c4d6ea]',   fg: 'text-[#1f4670]', label: 'Second interview' },
+  final_interview:  { bg: 'bg-[#a8c2dd]',   fg: 'text-[#13355a]', label: 'Final interview' },
+  offer:            { bg: 'bg-teal-light',  fg: 'text-teal',      label: 'Offer' },
+  accepted:         { bg: 'bg-teal',        fg: 'text-cream',     label: 'Accepted' },
+  rejected:         { bg: 'bg-rust-light',  fg: 'text-rust',      label: 'Rejected' },
+  withdrawn:        { bg: 'bg-ink-4',       fg: 'text-ink-1',     label: 'Withdrawn' },
+  declined:         { bg: 'bg-ink-4',       fg: 'text-ink-1',     label: 'Declined' },
+  ghosted:          { bg: 'bg-ink-4',       fg: 'text-ink-2',     label: 'Ghosted' },
 };
 
 export function StatusBadge({ status }: { status: JobStatus }) {

@@ -47,7 +47,11 @@ from app.core.email import (
     send_email,
     verification_email_body,
 )
-from app.core.rate_limit import LIMIT_LOGIN, check_rate_limit
+from app.core.rate_limit import (
+    LIMIT_LOGIN,
+    LIMIT_RESEND_VERIFICATION,
+    check_rate_limit,
+)
 from app.core.security import (
     REFRESH_TYPE,
     TokenError,
@@ -63,6 +67,7 @@ from app.schemas.auth import (
     LoginIn,
     MessageOut,
     RegisterIn,
+    ResendVerificationIn,
     ResetPasswordIn,
     TokenOut,
     UserOut,
@@ -195,6 +200,49 @@ async def verify_email(body: VerifyEmailIn, db: AsyncSession = Depends(get_db)) 
     user.is_verified = True
     await db.commit()
     return MessageOut(message="Email verified. You can now log in.")
+
+
+# --- Resend verification ---------------------------------------------------
+
+
+@router.post(
+    "/resend-verification",
+    response_model=MessageOut,
+    dependencies=[Depends(rate_limit_unauth_ip)],
+)
+async def resend_verification(
+    body: ResendVerificationIn, db: AsyncSession = Depends(get_db)
+) -> MessageOut:
+    """Re-issue a verification email for an unverified account.
+
+    Rate-limited two ways:
+      1. Per-IP via the shared unauth bucket (20/min) — same as register.
+      2. Per-email via LIMIT_RESEND_VERIFICATION (3/hour) — keyed by the
+         submitted email so no inbox can be carpet-bombed regardless of
+         the source IP.
+
+    Enumeration-resistant: same MessageOut whether the address is unknown,
+    already verified, or genuinely re-issued. We still consume the per-
+    email limit on lookup so an attacker can't probe-then-resend without
+    paying the cost.
+    """
+    # Check the per-email bucket BEFORE the DB lookup so a probe-flood
+    # against unknown emails can't escape the limit.
+    await check_rate_limit(body.email.lower(), LIMIT_RESEND_VERIFICATION)
+
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    # Already-verified accounts and unknown emails both fall through
+    # silently — no oracle for the attacker.
+    if user is not None and not user.is_verified:
+        token = await issue_verification_token(str(user.id))
+        subject, body_txt = verification_email_body(token)
+        await send_email(user.email, subject, body_txt)
+
+    return MessageOut(
+        message="If that account exists and isn't verified, we've sent a new link."
+    )
 
 
 # --- Login -----------------------------------------------------------------

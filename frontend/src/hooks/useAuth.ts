@@ -47,6 +47,14 @@ export function useAuth() {
       });
     },
 
+    async resendVerification(email: string) {
+      await api<{ message: string }>('/auth/resend-verification', {
+        method: 'POST',
+        body: { email },
+        skipAuthRefresh: true,
+      });
+    },
+
     async forgotPassword(email: string) {
       await api<{ message: string }>('/auth/forgot-password', {
         method: 'POST',

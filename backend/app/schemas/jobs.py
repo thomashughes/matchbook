@@ -22,10 +22,31 @@ class JobCreateIn(BaseModel):
     company: str | None = None
 
 
+# Application funnel statuses, ordered by pipeline progression.
+#
+# The linear ladder runs saved → applied → first_interview →
+# second_interview → final_interview → offer → accepted. Terminal
+# off-ramps (rejected, withdrawn, ghosted, declined) can attach from
+# any earlier stage. Keeping all eleven values in one Literal lets
+# Pydantic enforce the set at the API boundary; the funnel endpoint
+# uses the same constants when building Sankey nodes.
+JobStatusLiteral = Literal[
+    "saved",
+    "applied",
+    "first_interview",
+    "second_interview",
+    "final_interview",
+    "offer",
+    "accepted",
+    "rejected",
+    "withdrawn",
+    "declined",
+    "ghosted",
+]
+
+
 class JobPatch(BaseModel):
-    status: (
-        Literal["saved", "applied", "interviewing", "offer", "rejected"] | None
-    ) = None
+    status: JobStatusLiteral | None = None
     notes: str | None = None
 
 

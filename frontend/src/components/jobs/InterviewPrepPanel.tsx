@@ -34,6 +34,7 @@ import {
 } from '@/api/hooks';
 import type { InterviewPrepRound, JobAIOutput } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { useJobQuota } from '@/api/quota';
 import { QuotaCaption } from './QuotaCaption';
 
 const ROUNDS: { value: InterviewPrepRound; label: string }[] = [
@@ -51,6 +52,7 @@ export function InterviewPrepPanel({ jobId }: { jobId: string }) {
   const list = useAIOutputs(jobId, 'interview_prep');
   const generate = useGenerateInterviewPrep(jobId);
   const remove = useDeleteAIOutput(jobId, 'interview_prep');
+  const quota = useJobQuota(jobId, 'draft_interview_prep');
 
   const sheets = list.data ?? [];
 
@@ -91,9 +93,10 @@ export function InterviewPrepPanel({ jobId }: { jobId: string }) {
 
         <div className="self-end ml-auto">
           <button
-            className="mb-btn-primary flex items-center gap-2"
+            className="mb-btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={submit}
-            disabled={generate.isPending}
+            disabled={generate.isPending || quota.atLimit}
+            title={quota.atLimit ? 'No interview-prep sheets left this month — upgrade for unlimited' : undefined}
           >
             {generate.isPending ? (
               <Loader2 size={14} className="animate-spin" />

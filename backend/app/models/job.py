@@ -44,8 +44,12 @@ class Job(Base, UUIDPkMixin, TimestampMixin):
     # new source types later without an Alembic migration for the type.
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
 
-    # Application funnel state: saved | applied | interviewing | offer | rejected.
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="saved")
+    # Application funnel state. Allowed values come from
+    # schemas.jobs.JobStatusLiteral; the column is plain VARCHAR rather
+    # than a DB ENUM so adding a future stage is one Pydantic edit, not
+    # an Alembic migration. Width 30 fits all current values plus
+    # comfortable headroom.
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="saved")
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 

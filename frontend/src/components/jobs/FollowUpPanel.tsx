@@ -27,6 +27,7 @@ import type {
   JobAIOutput,
 } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { useJobQuota } from '@/api/quota';
 import { QuotaCaption } from './QuotaCaption';
 
 const STAGES: { value: FollowUpStage; label: string }[] = [
@@ -49,6 +50,7 @@ export function FollowUpPanel({ jobId }: { jobId: string }) {
   const list = useAIOutputs(jobId, 'follow_up');
   const generate = useGenerateFollowUp(jobId);
   const remove = useDeleteAIOutput(jobId, 'follow_up');
+  const quota = useJobQuota(jobId, 'draft_follow_up');
 
   const messages = list.data ?? [];
 
@@ -110,9 +112,10 @@ export function FollowUpPanel({ jobId }: { jobId: string }) {
 
         <div className="self-end ml-auto">
           <button
-            className="mb-btn-primary flex items-center gap-2"
+            className="mb-btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={submit}
-            disabled={generate.isPending}
+            disabled={generate.isPending || quota.atLimit}
+            title={quota.atLimit ? 'No follow-up drafts left this month — upgrade for unlimited' : undefined}
           >
             {generate.isPending ? (
               <Loader2 size={14} className="animate-spin" />

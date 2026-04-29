@@ -16,23 +16,55 @@ import { ApiError } from '@/api/client';
  */
 export default function LoginPage() {
   const nav = useNavigate();
-  const { login } = useAuth();
+  const { login, resendVerification } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when login fails specifically because the account is unverified.
+  // Drives the inline "Resend verification email" affordance — we never
+  // surface that link on a generic 401 because it would leak that the
+  // account exists.
+  const [unverified, setUnverified] = useState(false);
+  const [resendState, setResendState] = useState<'idle' | 'sending' | 'sent'>(
+    'idle',
+  );
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
+    setUnverified(false);
+    setResendState('idle');
     try {
       await login(email, password);
       nav('/');
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : 'Something went wrong');
+      if (err instanceof ApiError) {
+        setError(err.detail);
+        // 403 from /auth/login is only ever returned for unverified
+        // accounts (see auth.py — 401 is wrong-credentials, 403 is
+        // verified=false). Use status, not message-matching, for the
+        // signal so a wording change doesn't break this branch.
+        if (err.status === 403) setUnverified(true);
+      } else {
+        setError('Something went wrong');
+      }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function onResend() {
+    if (!email || resendState === 'sending') return;
+    setResendState('sending');
+    try {
+      await resendVerification(email);
+    } finally {
+      // Always flip to "sent" — the backend response is enumeration-
+      // resistant so a real send and a no-op look identical from here.
+      // Showing "sent" regardless mirrors that contract honestly.
+      setResendState('sent');
     }
   }
 
@@ -81,7 +113,30 @@ export default function LoginPage() {
         </div>
 
         {error && (
-          <div className="text-sm text-rust bg-rust-light rounded-lg px-3 py-2">{error}</div>
+          <div className="text-sm text-rust bg-rust-light rounded-lg px-3 py-2">
+            {error}
+            {unverified && (
+              <div className="mt-2">
+                {resendState === 'sent' ? (
+                  <span className="text-ink-2">
+                    If that account exists and isn't verified, a new link is on
+                    its way.
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onResend}
+                    disabled={resendState === 'sending'}
+                    className="underline font-medium hover:opacity-80 disabled:opacity-50"
+                  >
+                    {resendState === 'sending'
+                      ? 'Sending…'
+                      : 'Resend verification email'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         <button className="mb-btn-primary w-full" disabled={submitting}>

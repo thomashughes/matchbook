@@ -24,6 +24,8 @@ import type {
   CvVersion,
   FollowUpChannel,
   FollowUpStage,
+  FunnelOut,
+  FunnelWindow,
   InterviewPrepRound,
   JobAIOutput,
   JobDetail,
@@ -104,6 +106,8 @@ export function useCreateJob() {
       // jobs_created is a per-user counter — refresh the dashboard pill
       // so the "X of Y jobs this month" reading updates after creation.
       qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+      // New job seeds a "saved" history row, so the funnel grows.
+      qc.invalidateQueries({ queryKey: ['dashboard', 'funnel'] });
     },
   });
 }
@@ -115,6 +119,7 @@ export function useCreateJobFromPdf() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['jobs'] });
       qc.invalidateQueries({ queryKey: ['billing', 'status'] });
+      qc.invalidateQueries({ queryKey: ['dashboard', 'funnel'] });
     },
   });
 }
@@ -127,6 +132,9 @@ export function usePatchJob(id: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['jobs'] });
       qc.invalidateQueries({ queryKey: ['jobs', 'detail', id] });
+      // A status change adds a row to job_status_history, so the
+      // dashboard funnel needs to redraw on the next visit.
+      qc.invalidateQueries({ queryKey: ['dashboard', 'funnel'] });
     },
   });
 }
@@ -135,7 +143,12 @@ export function useDeleteJob() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api<void>(`/jobs/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      // ON DELETE CASCADE strips the job's history rows; the funnel
+      // would otherwise still show its transitions.
+      qc.invalidateQueries({ queryKey: ['dashboard', 'funnel'] });
+    },
   });
 }
 
@@ -321,6 +334,24 @@ export function useGenerateCompanyResearch(jobId: string) {
       // company_research is a per-user counter — refresh the pill.
       qc.invalidateQueries({ queryKey: ['billing', 'status'] });
     },
+  });
+}
+
+// --- Dashboard ------------------------------------------------------------
+
+/**
+ * Funnel data for the dashboard Sankey. Window-keyed cache so flipping
+ * "Last 90 days ↔ All time" doesn't refetch what we already have.
+ *
+ * staleTime is short rather than zero — patching a job's status
+ * invalidates this key immediately (see usePatchJob below), but we
+ * don't need to refetch on every navigation back to /dashboard.
+ */
+export function useFunnel(window: FunnelWindow) {
+  return useQuery({
+    queryKey: ['dashboard', 'funnel', window],
+    queryFn: () => api<FunnelOut>(`/dashboard/funnel?window=${window}`),
+    staleTime: 30_000,
   });
 }
 

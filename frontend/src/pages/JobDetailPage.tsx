@@ -25,7 +25,37 @@ import { OutreachPanel } from '@/components/jobs/OutreachPanel';
 import type { JobStatus } from '@/types/models';
 import { useNavigate } from 'react-router-dom';
 
-const STATUSES: JobStatus[] = ['saved', 'applied', 'interviewing', 'offer', 'rejected'];
+// Order matches the funnel ladder: linear progression first, terminal
+// off-ramps after. The button row wraps, so a long ladder is fine.
+const STATUSES: JobStatus[] = [
+  'saved',
+  'applied',
+  'first_interview',
+  'second_interview',
+  'final_interview',
+  'offer',
+  'accepted',
+  'rejected',
+  'withdrawn',
+  'declined',
+  'ghosted',
+];
+
+// Human label for the button — same strings as StatusBadge so the row
+// reads consistently with the pill above it.
+const STATUS_LABEL: Record<JobStatus, string> = {
+  saved: 'Saved',
+  applied: 'Applied',
+  first_interview: 'First interview',
+  second_interview: 'Second interview',
+  final_interview: 'Final interview',
+  offer: 'Offer',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+  withdrawn: 'Withdrawn',
+  declined: 'Declined',
+  ghosted: 'Ghosted',
+};
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -189,21 +219,27 @@ export function JobDetailPage() {
             // choice draws the eye.
             const active = j.status === st;
             const activeCls: Record<JobStatus, string> = {
-              saved:        'bg-ink text-white',
-              applied:      'bg-gold text-white',
-              interviewing: 'bg-[#2b5d89] text-white',
-              offer:        'bg-teal text-white',
-              rejected:     'bg-rust text-white',
+              saved:            'bg-ink text-white',
+              applied:          'bg-gold text-white',
+              first_interview:  'bg-[#2b5d89] text-white',
+              second_interview: 'bg-[#1f4670] text-white',
+              final_interview:  'bg-[#13355a] text-white',
+              offer:            'bg-teal text-white',
+              accepted:         'bg-teal text-white',
+              rejected:         'bg-rust text-white',
+              withdrawn:        'bg-ink-2 text-white',
+              declined:         'bg-ink-2 text-white',
+              ghosted:          'bg-ink-3 text-white',
             };
             return (
               <button
                 key={st}
                 onClick={() => patch.mutate({ status: st })}
-                className={`rounded-full px-3 py-1 text-sm capitalize transition ${
+                className={`rounded-full px-3 py-1 text-sm transition ${
                   active ? activeCls[st] : 'bg-parchment text-ink-2 hover:text-ink'
                 }`}
               >
-                {st}
+                {STATUS_LABEL[st]}
               </button>
             );
           })}

@@ -26,6 +26,7 @@ import type {
   OutreachRecipientRole,
 } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
+import { useJobQuota } from '@/api/quota';
 import { QuotaCaption } from './QuotaCaption';
 
 const CHANNELS: { value: OutreachChannel; label: string }[] = [
@@ -49,6 +50,7 @@ export function OutreachPanel({ jobId }: { jobId: string }) {
   const list = useAIOutputs(jobId, 'outreach');
   const generate = useGenerateOutreach(jobId);
   const remove = useDeleteAIOutput(jobId, 'outreach');
+  const quota = useJobQuota(jobId, 'draft_outreach');
 
   const messages = list.data ?? [];
 
@@ -108,7 +110,7 @@ export function OutreachPanel({ jobId }: { jobId: string }) {
 
         <div className="self-end">
           <button
-            className="mb-btn-primary flex items-center gap-2"
+            className="mb-btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={() =>
               generate.mutate({
                 channel,
@@ -116,7 +118,8 @@ export function OutreachPanel({ jobId }: { jobId: string }) {
                 recipient_name: recipientName.trim() || null,
               })
             }
-            disabled={generate.isPending}
+            disabled={generate.isPending || quota.atLimit}
+            title={quota.atLimit ? 'No outreach drafts left this month — upgrade for unlimited' : undefined}
           >
             {generate.isPending ? (
               <Loader2 size={14} className="animate-spin" />

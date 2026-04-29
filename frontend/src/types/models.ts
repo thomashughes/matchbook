@@ -54,7 +54,22 @@ export interface JobScore {
   scored_at: string;
 }
 
-export type JobStatus = 'saved' | 'applied' | 'interviewing' | 'offer' | 'rejected';
+// Eleven application stages — see backend schemas.jobs.JobStatusLiteral
+// for the canonical list. Order in this union mirrors the Sankey
+// layout (linear ladder first, terminals second) so a missed-update
+// surface is grep-spottable.
+export type JobStatus =
+  | 'saved'
+  | 'applied'
+  | 'first_interview'
+  | 'second_interview'
+  | 'final_interview'
+  | 'offer'
+  | 'accepted'
+  | 'rejected'
+  | 'withdrawn'
+  | 'declined'
+  | 'ghosted';
 
 export interface JobListItem {
   id: string;
@@ -217,6 +232,32 @@ export interface JobDetail {
   // Present on GET/PATCH responses. create_job returns [] to avoid a
   // second DB query — the next GET will fill it.
   quota: QuotaItem[];
+}
+
+// --- Dashboard funnel ----------------------------------------------------
+
+// Allowed time-window keys for the funnel endpoint. Kept as a literal so
+// the toggle UI and the API hook can share the type without drift.
+export type FunnelWindow = 'all' | '90d' | '365d';
+
+export interface FunnelNode {
+  id: string;
+  label: string;
+  count: number;
+}
+
+export interface FunnelLink {
+  source: string;
+  target: string;
+  value: number;
+}
+
+export interface FunnelOut {
+  nodes: FunnelNode[];
+  links: FunnelLink[];
+  total_jobs: number;
+  window_start: string | null;
+  window_end: string;
 }
 
 // --- Billing --------------------------------------------------------------

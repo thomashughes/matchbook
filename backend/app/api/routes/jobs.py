@@ -32,6 +32,7 @@ from app.core.database import get_db
 from app.core.entitlements import RESOURCES, current_window, plan_limit, refund
 from app.models.usage_counter import UsageCounter
 from app.models.job import Job
+from app.models.job_status_history import JobStatusHistory
 from app.models.job_score import JobScore
 from app.models.profile import Profile
 from app.models.user import User
@@ -319,6 +320,18 @@ async def create_job(
         db.add(job)
         await db.flush()  # assigns job.id before we use it for the score row
 
+        # Seed the funnel: every new job gets an initial history row so
+        # the dashboard Sankey has an entry node even if the status is
+        # never changed afterwards.
+        db.add(
+            JobStatusHistory(
+                job_id=job.id,
+                user_id=user.id,
+                from_status=None,
+                to_status="saved",
+            )
+        )
+
         score = await _score_and_persist(job, profile, db, user)
 
         await db.commit()
@@ -384,6 +397,16 @@ async def create_from_pdf(
         )
         db.add(job)
         await db.flush()
+
+        # Seed the funnel — see create_job for the rationale.
+        db.add(
+            JobStatusHistory(
+                job_id=job.id,
+                user_id=user.id,
+                from_status=None,
+                to_status="saved",
+            )
+        )
 
         score = await _score_and_persist(job, profile, db, user)
 
@@ -512,8 +535,27 @@ async def patch_job(
     db: AsyncSession = Depends(get_db),
 ) -> JobDetailOut:
     job = await _own_job(job_id, user, db)
-    for key, value in body.model_dump(exclude_none=True).items():
+
+    # Capture the prior status BEFORE applying patch fields so we can
+    # decide whether to append a history row. We only record an entry
+    # when the status actually changed — a no-op patch (e.g. user just
+    # edits notes) shouldn't pollute the funnel data.
+    prior_status = job.status
+
+    updates = body.model_dump(exclude_none=True)
+    for key, value in updates.items():
         setattr(job, key, value)
+
+    if "status" in updates and updates["status"] != prior_status:
+        db.add(
+            JobStatusHistory(
+                job_id=job.id,
+                user_id=user.id,
+                from_status=prior_status,
+                to_status=updates["status"],
+            )
+        )
+
     await db.commit()
     await db.refresh(job)
     score = await _latest_score(job.id, db)
