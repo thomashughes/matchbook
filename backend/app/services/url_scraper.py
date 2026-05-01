@@ -21,6 +21,8 @@ offers "paste text" as the reliable fallback.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -31,8 +33,98 @@ from fastapi import HTTPException, status
 UA = "Mozilla/5.0 (compatible; Matchbook/2.0; +https://matchbook.tag-art.co.uk/bot)"
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 MAX_BYTES = 1_000_000
+MAX_REDIRECTS = 5
 
 BLOCKED_HOSTS = {"linkedin.com", "www.linkedin.com"}
+
+# SSRF guard. Without this an authenticated user can submit
+# `http://redis:6379/`, `http://postgres:5432/`, `http://127.0.0.1/admin`,
+# or any RFC1918 address; the backend container would dutifully fetch it
+# and store the response in the job's description, which the user can
+# then read back. We resolve the hostname and reject if any candidate IP
+# falls into a non-public range. Re-validated after every redirect — an
+# attacker can otherwise host a public URL that 302s to a private IP.
+def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True only for globally routable, non-special-use addresses.
+
+    We deliberately reject loopback, RFC1918 private, link-local
+    (169.254.0.0/16 — covers cloud metadata endpoints), multicast,
+    reserved, and unspecified ranges. is_global is the inverse on
+    modern Python and would be cleaner, but checking each predicate
+    explicitly makes the intent and the test surface obvious.
+    """
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _resolve_and_validate(host: str) -> None:
+    """Resolve `host` and raise 400 if any A/AAAA record is non-public.
+
+    Checking *every* returned address (not just the first) defeats DNS
+    rebinding tricks where the resolver returns a public IP on the
+    first lookup and a private one on a later retry. httpx will resolve
+    again internally; we accept the small TOCTOU risk because the
+    blocklist below also catches direct IP literals in the URL.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Could not resolve that hostname.",
+        ) from e
+    for family, _type, _proto, _canon, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if not _is_public_ip(ip):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="That URL points to a non-public address and cannot be fetched.",
+            )
+
+
+def _validate_url(url: str) -> str:
+    """Return the host if the URL is safe to fetch, else raise 400.
+
+    Three layers:
+      1. Scheme must be http or https — no file://, gopher://, ftp://,
+         data://, etc. (httpx already errors on most, but explicit is
+         cheaper than relying on transport quirks.)
+      2. If the host is a literal IP, it must itself be public.
+      3. Otherwise resolve and validate every returned address.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Only http(s) URLs are supported.",
+        )
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="That URL has no hostname.",
+        )
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        _resolve_and_validate(host)
+    else:
+        if not _is_public_ip(ip):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="That URL points to a non-public address and cannot be fetched.",
+            )
+    return host
 
 
 @dataclass
@@ -98,18 +190,38 @@ def _extract_generic(soup: BeautifulSoup) -> ScrapedJob:
 
 
 async def scrape_job_url(url: str) -> ScrapedJob:
-    host = urlparse(url).hostname or ""
+    # Validate before the first request, then again after every redirect.
+    # follow_redirects=False lets us walk the chain ourselves so each
+    # hop's destination IP can be re-validated — auto-follow would let an
+    # attacker host a public URL that 302s to a private one.
+    host = _validate_url(url)
     if any(host.endswith(b) for b in BLOCKED_HOSTS):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             detail="LinkedIn URLs are not supported. Use the browser extension or paste the text.",
         )
 
+    current_url = url
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": UA}) as client:
-            resp = await client.get(url, follow_redirects=True)
-            resp.raise_for_status()
-            body = resp.content[:MAX_BYTES]
+            for _ in range(MAX_REDIRECTS + 1):
+                resp = await client.get(current_url, follow_redirects=False)
+                if resp.is_redirect:
+                    next_url = resp.headers.get("location")
+                    if not next_url:
+                        break
+                    # urljoin via httpx handles relative redirects safely.
+                    current_url = str(resp.next_request.url) if resp.next_request else next_url
+                    host = _validate_url(current_url)
+                    continue
+                resp.raise_for_status()
+                body = resp.content[:MAX_BYTES]
+                break
+            else:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="Too many redirects.",
+                )
     except httpx.HTTPError as e:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
