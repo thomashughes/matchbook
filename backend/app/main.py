@@ -70,21 +70,46 @@ app.include_router(cv_routes.router, prefix=API_V1)
 app.include_router(dashboard_routes.router, prefix=API_V1)
 
 
+# Paths whose request bodies must NEVER be logged because they carry
+# plaintext credentials, reset tokens, or other secrets. Pydantic's 422
+# fires *before* the route runs, so a malformed payload (bad email format,
+# extra unknown field, etc.) would otherwise dump the password into the
+# logs at WARNING level.
+_SENSITIVE_PATH_PREFIXES = (
+    "/api/v1/auth/",
+    "/api/v1/billing/webhook",
+)
+
+
+def _is_sensitive_path(path: str) -> bool:
+    return any(path.startswith(p) for p in _SENSITIVE_PATH_PREFIXES)
+
+
 @app.exception_handler(RequestValidationError)
 async def _log_validation_errors(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    """Log the actual body + errors on 422 so we can diagnose client/server
-    schema drift instead of staring at opaque 'Unprocessable Entity' lines."""
-    try:
-        body = await request.body()
-        body_preview = body.decode("utf-8")[:2000]
-    except Exception:
-        body_preview = "<unreadable>"
+    """Log errors on 422 so we can diagnose client/server schema drift.
+
+    The request body is logged for non-sensitive paths only — auth and
+    webhook bodies carry secrets (passwords, reset tokens, signing
+    payloads) that must never reach the log stream. For those paths we
+    log just the error structure, which is enough to identify the
+    malformed field without exposing its value.
+    """
+    path = request.url.path
+    if _is_sensitive_path(path):
+        body_preview = "<redacted: sensitive path>"
+    else:
+        try:
+            body = await request.body()
+            body_preview = body.decode("utf-8")[:2000]
+        except Exception:
+            body_preview = "<unreadable>"
     logging.getLogger("uvicorn.error").warning(
         "422 on %s %s | errors=%s | body=%s",
         request.method,
-        request.url.path,
+        path,
         _json.dumps(exc.errors(), default=str)[:1500],
         body_preview,
     )
