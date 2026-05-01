@@ -5,8 +5,17 @@
  * AppShell so the sidebar/topbar and the quick-add panel context are
  * always mounted. Onboarding routes deliberately skip AppShell — we
  * want the focused, full-bleed layout until the user has a profile.
+ *
+ * Boot sequence: on mount we attempt one silent refresh against the
+ * httpOnly refresh cookie. If it succeeds we hydrate the auth store
+ * before any route guard fires; if it fails we fall through to the
+ * normal "log in again" path. Route guards wait on `bootstrapped` so
+ * a cold load never flashes the login page for an already-signed-in
+ * user.
  */
+import { useEffect } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
+import NotFoundPage from './pages/NotFoundPage';
 import LoginPage from './pages/auth/LoginPage';
 import RegisterPage from './pages/auth/RegisterPage';
 import VerifyEmailPage from './pages/auth/VerifyEmailPage';
@@ -24,10 +33,69 @@ import { CvBuilderPage } from './pages/CvBuilderPage';
 import { AppShell } from './components/layout/AppShell';
 import { useAuthStore } from './stores/auth';
 import { useProfile } from './api/hooks';
+import { api, tryRefresh } from './api/client';
 import type { ReactNode } from 'react';
+
+interface UserResponse {
+  id: string;
+  email: string;
+  is_verified: boolean;
+}
+
+/**
+ * One-shot boot bootstrapper. Calls /auth/refresh; on success populates
+ * the user via /auth/me. Either way flips `bootstrapped` so the route
+ * guards stop showing the splash. We swallow errors — bootstrap should
+ * never throw to the UI; "no session" is a valid outcome.
+ */
+function useAuthBootstrap() {
+  const setUser = useAuthStore((s) => s.setUser);
+  const setBootstrapped = useAuthStore((s) => s.setBootstrapped);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await tryRefresh();
+        if (!cancelled && token) {
+          // /auth/me uses the freshly-set bearer; safe to call via the
+          // normal api() wrapper.
+          const me = await api<UserResponse>('/auth/me');
+          if (!cancelled) setUser(me);
+        }
+      } catch {
+        /* No session, expired refresh cookie, or backend hiccup — fall
+           through to the unauth path. */
+      } finally {
+        if (!cancelled) setBootstrapped(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [setUser, setBootstrapped]);
+}
+
+/**
+ * Centred splash shown for the brief window between mount and the boot
+ * refresh resolving. Deliberately unbranded and minimal — anything more
+ * elaborate gets seen as a "loading screen" by users on slow networks.
+ */
+function BootSplash() {
+  return (
+    <div className="min-h-full flex items-center justify-center bg-cream">
+      <div className="text-ink-3 text-sm">Loading…</div>
+    </div>
+  );
+}
 
 function Protected({ children }: { children: ReactNode }) {
   const token = useAuthStore((s) => s.accessToken);
+  const bootstrapped = useAuthStore((s) => s.bootstrapped);
+  // Wait for the boot-time refresh to settle before deciding. Without
+  // this gate a hard load races the refresh and the user sees /login
+  // for ~50ms even though their session is valid.
+  if (!bootstrapped) return <BootSplash />;
   return token ? <>{children}</> : <Navigate to="/login" replace />;
 }
 
@@ -56,6 +124,8 @@ function Shell({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
+  useAuthBootstrap();
+
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
@@ -75,7 +145,7 @@ export default function App() {
       <Route path="/billing" element={<Shell><BillingPage /></Shell>} />
       <Route path="/cv" element={<Shell><CvBuilderPage /></Shell>} />
 
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
 }

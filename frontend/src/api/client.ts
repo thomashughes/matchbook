@@ -93,7 +93,11 @@ async function rawFetch(path: string, opts: RequestOptions, token: string | null
   });
 }
 
-async function tryRefresh(): Promise<string | null> {
+// Exported so the app's boot sequence can attempt a silent refresh
+// before the route guards run — without it, a hard reload looks like
+// a forced logout because the in-memory access token is gone before
+// the first API request gets a chance to 401-and-refresh.
+export async function tryRefresh(): Promise<string | null> {
   const res = await fetch(`${BASE}/auth/refresh`, {
     method: 'POST',
     credentials: 'include',
