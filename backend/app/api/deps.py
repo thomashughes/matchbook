@@ -25,11 +25,20 @@ from app.models.user import User
 def client_ip(request: Request) -> str:
     """Extract the originating client IP.
 
-    Behind Apache reverse proxy we trust X-Forwarded-For's *first* entry —
-    subsequent entries can be spoofed by the client. Apache's vhost config
-    is responsible for stripping any X-Forwarded-For the client sent and
-    replacing it with its own; if that config is missing, this function
-    is the weak link for IP-based rate limiting. Documented risk.
+    Trust model: Apache (the public-facing reverse proxy on the VPS) is
+    configured to OVERWRITE X-Forwarded-For with the actual TCP source
+    address it observed. The directive lives in the Plesk vhost.conf:
+        RequestHeader set X-Forwarded-For "%{REMOTE_ADDR}e"
+    The container nginx then appends Apache's loopback to the chain via
+    $proxy_add_x_forwarded_for. So a request that originally arrived
+    from 1.2.3.4 reaches uvicorn as:
+        X-Forwarded-For: 1.2.3.4, 127.0.0.1
+    The first entry is now Apache-attested — clients cannot influence
+    it by setting their own header, because Apache's `set` overwrites.
+
+    If the Apache directive is ever removed, this function silently
+    becomes spoofable and the per-IP login rate limit defeated. Treat
+    that vhost.conf entry as load-bearing security.
     """
     xff = request.headers.get("x-forwarded-for")
     if xff:
