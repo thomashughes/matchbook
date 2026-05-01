@@ -31,7 +31,9 @@ FROM nginx:1.27-alpine
 
 # Replace the default config with one tuned for a React SPA (needs the
 # try_files fallback to index.html so client-side routes 200 instead of 404).
+# security-headers.inc is included from nginx.conf at request time.
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY security-headers.inc /etc/nginx/conf.d/security-headers.inc
 
 COPY --from=build /app/dist /usr/share/nginx/html
 
