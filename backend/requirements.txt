@@ -27,11 +27,15 @@ email-validator==2.2.0
 #   `__about__.__version__` attribute that was removed in bcrypt 4.1+, and
 #   its backend-init probe also trips the >72-byte guard added in 4.1.
 #   Until passlib releases a fix, pin the last compatible bcrypt.
-# - python-jose[cryptography]: JWT encode/decode with RS256.
-# - cryptography: Fernet symmetric encryption for OAuth tokens at rest.
+# - PyJWT: JWT encode/decode with RS256. Migrated from python-jose 3.3.0
+#   (CVE-2024-33664 JWE DoS, CVE-2024-33663 algorithm confusion; project
+#   unmaintained since 2021). PyJWT is actively maintained and was a near
+#   drop-in for the RS256 sign/verify API used here.
+# - cryptography: Fernet symmetric encryption for OAuth tokens at rest;
+#   also the RSA backend PyJWT uses for RS256.
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
-python-jose[cryptography]==3.3.0
+pyjwt[crypto]==2.9.0
 cryptography==43.0.1
 
 # File handling (Phase 2+). Listed now so the image is Phase-2-ready.

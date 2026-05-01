@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 
 from app.core.config import get_settings
@@ -84,7 +84,7 @@ def _create_token(subject: UUID, token_type: str, ttl: timedelta) -> str:
 
     Claims used:
         sub  — the user's UUID. This is what get_current_user reads.
-        exp  — expiry (UTC). python-jose enforces this on decode.
+        exp  — expiry (UTC). PyJWT enforces this on decode.
         iat  — issued-at. Useful for debugging and future revocation.
         jti  — unique token id. Phase-2 revocation list lookup key.
         token_type — our own claim; see note above.
@@ -137,7 +137,7 @@ def decode_token(token: str, expected_type: str) -> UUID:
             settings.jwt_public_key,
             algorithms=[settings.JWT_ALGORITHM],
         )
-    except JWTError as e:
+    except jwt.PyJWTError as e:
         raise TokenError("invalid token") from e
 
     if payload.get("token_type") != expected_type:
