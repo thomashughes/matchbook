@@ -36,6 +36,7 @@ import type { CompanyResearch } from '@/types/models';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
 import { useUserQuota } from '@/api/quota';
 import { UserQuotaCaption } from './UserQuotaCaption';
+import { safeHref } from '@/utils/safeHref';
 
 export function CompanyResearchPanel({
   jobId,
@@ -265,19 +266,28 @@ function BriefingView({
             <div>
               <div className="mb-label mb-1">Sources</div>
               <ul className="space-y-1 text-xs">
-                {data.sources.map((url) => (
-                  <li key={url} className="truncate">
-                    <a
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
-                    >
-                      <ExternalLink size={11} className="shrink-0" />
-                      <span className="truncate">{url}</span>
-                    </a>
-                  </li>
-                ))}
+                {data.sources.map((url) => {
+                  // Sources come from Claude+web_search output. The model
+                  // is generally well-behaved but a prompt-injected job
+                  // description could theoretically coax it into emitting
+                  // a `javascript:` URL — safeHref drops anything that
+                  // isn't http/https/mailto.
+                  const safe = safeHref(url);
+                  if (!safe) return null;
+                  return (
+                    <li key={url} className="truncate">
+                      <a
+                        href={safe}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
+                      >
+                        <ExternalLink size={11} className="shrink-0" />
+                        <span className="truncate">{url}</span>
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}

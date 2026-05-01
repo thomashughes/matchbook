@@ -23,6 +23,7 @@ import { FormResponsePanel } from '@/components/jobs/FormResponsePanel';
 import { InterviewPrepPanel } from '@/components/jobs/InterviewPrepPanel';
 import { OutreachPanel } from '@/components/jobs/OutreachPanel';
 import type { JobStatus } from '@/types/models';
+import { safeHref } from '@/utils/safeHref';
 import { useNavigate } from 'react-router-dom';
 
 // Order matches the funnel ladder: linear progression first, terminal
@@ -164,16 +165,19 @@ export function JobDetailPage() {
             </div>
             <div className="mt-3 flex items-center gap-2 flex-wrap">
               <StatusBadge status={j.status} />
-              {j.source_url && (
-                <a
-                  href={j.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-ink-2 hover:text-ink inline-flex items-center gap-1"
-                >
-                  <ExternalLink size={12} /> Original posting
-                </a>
-              )}
+              {(() => {
+                const safe = safeHref(j.source_url);
+                return safe ? (
+                  <a
+                    href={safe}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-ink-2 hover:text-ink inline-flex items-center gap-1"
+                  >
+                    <ExternalLink size={12} /> Original posting
+                  </a>
+                ) : null;
+              })()}
             </div>
             {s?.summary && <p className="mt-4 text-sm text-ink-2 leading-relaxed">{s.summary}</p>}
           </div>
