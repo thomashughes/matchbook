@@ -27,7 +27,7 @@ export function TopBar({ onQuickAdd }: { onQuickAdd: () => void }) {
 
   return (
     <header
-      className="sticky top-0 z-20 bg-cream/90 backdrop-blur flex items-center justify-between px-7 h-14"
+      className="sticky top-0 z-20 bg-cream/90 backdrop-blur hidden md:flex items-center justify-between px-7 h-14"
       style={{ borderBottom: '0.5px solid var(--border)' }}
     >
       <div>

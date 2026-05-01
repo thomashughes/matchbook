@@ -138,25 +138,113 @@ function FunnelBody({
   }
 
   return (
-    <div className="h-[320px] w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <Sankey
-          data={data}
-          nodePadding={24}
-          nodeWidth={14}
-          margin={{ top: 8, right: 80, bottom: 8, left: 8 }}
-          // Custom node so we can colour each rectangle by its stage —
-          // Recharts default uses a single fill across every node.
-          node={<FunnelNode />}
-          // Default link is a thin grey ribbon; bump the colour and
-          // opacity so it reads on the parchment background.
-          link={{ stroke: '#9a8c79', strokeOpacity: 0.45 }}
-        >
-          <Tooltip
-            formatter={(value: number) => [`${value} job${value === 1 ? '' : 's'}`, 'Flow']}
-          />
-        </Sankey>
-      </ResponsiveContainer>
+    <>
+      {/* Desktop: Recharts Sankey. Needs horizontal room for labels +
+          band geometry — only readable above the md breakpoint. */}
+      <div className="hidden md:block h-[320px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <Sankey
+            data={data}
+            nodePadding={24}
+            nodeWidth={14}
+            margin={{ top: 8, right: 80, bottom: 8, left: 8 }}
+            // Custom node so we can colour each rectangle by its stage —
+            // Recharts default uses a single fill across every node.
+            node={<FunnelNode />}
+            // Default link is a thin grey ribbon; bump the colour and
+            // opacity so it reads on the parchment background.
+            link={{ stroke: '#9a8c79', strokeOpacity: 0.45 }}
+          >
+            <Tooltip
+              formatter={(value: number) => [`${value} job${value === 1 ? '' : 's'}`, 'Flow']}
+            />
+          </Sankey>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Mobile: vertical funnel bars. Sankey's branching detail is lost
+          by design — at phone width that detail is unreadable anyway and
+          column counts dominate the signal. */}
+      <div className="md:hidden">
+        <MobileFunnel nodes={data.nodes} />
+      </div>
+    </>
+  );
+}
+
+// Pipeline order for the mobile funnel. Active stages first (saved →
+// offer/accepted), terminal/lost stages last so the eye reads "advance"
+// at the top and "drop-off" at the bottom. Stages absent from this list
+// fall to the end via indexOf returning -1.
+const STAGE_ORDER = [
+  'saved',
+  'applied',
+  'first_interview',
+  'second_interview',
+  'final_interview',
+  'offer',
+  'accepted',
+  'rejected',
+  'declined',
+  'withdrawn',
+  'ghosted',
+];
+
+function MobileFunnel({ nodes }: { nodes: { name: string; stage: string }[] }) {
+  // The parent useMemo already formats `name` as "Label (count)". Parse
+  // count back out rather than threading the raw value through — keeps
+  // the desktop chartData shape unchanged.
+  const parsed = nodes
+    .map((n) => {
+      const m = n.name.match(/\((\d+)\)$/);
+      return {
+        stage: n.stage,
+        label: n.name.replace(/\s*\(\d+\)$/, ''),
+        count: m ? Number(m[1]) : 0,
+      };
+    })
+    .filter((n) => n.count > 0)
+    .sort((a, b) => {
+      const ai = STAGE_ORDER.indexOf(a.stage);
+      const bi = STAGE_ORDER.indexOf(b.stage);
+      // Unknown stages (-1) sink to the bottom but stay in API order
+      // relative to each other.
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+
+  if (parsed.length === 0) {
+    return (
+      <div className="text-sm text-ink-2 py-10 text-center">
+        Add more roles to see your funnel.
+      </div>
+    );
+  }
+
+  // Bar widths are relative to the busiest stage so the densest column
+  // fills the row and the rest scale beneath it. Absolute counts shown
+  // at the right keep the actual numbers honest.
+  const max = Math.max(...parsed.map((n) => n.count));
+
+  return (
+    <div className="space-y-2 py-2">
+      {parsed.map((n) => {
+        const pct = (n.count / max) * 100;
+        const colour = NODE_COLOUR[n.stage] ?? FALLBACK_COLOUR;
+        return (
+          <div key={n.stage} className="flex items-center gap-3">
+            <div className="text-xs text-ink-2 w-[110px] shrink-0 truncate">{n.label}</div>
+            <div className="flex-1 h-7 bg-parchment rounded overflow-hidden">
+              <div
+                className="h-full rounded transition-all"
+                style={{ width: `${pct}%`, background: colour, opacity: 0.95 }}
+              />
+            </div>
+            <div className="text-xs font-medium text-ink w-7 text-right shrink-0 tabular-nums">
+              {n.count}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

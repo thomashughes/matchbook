@@ -23,19 +23,23 @@ export function JobCard({ job }: { job: JobListItem }) {
           <div className="mb-display text-lg text-ink truncate">{job.title}</div>
           <StatusBadge status={job.status} />
         </div>
-        <div className="mt-1 flex items-center gap-4 text-sm text-ink-2">
-          <span className="inline-flex items-center gap-1">
-            <Briefcase size={14} className="text-ink-3" />
-            {job.company}
+        {/* flex-wrap + min-w-0 on the inline-flex chunks lets the row
+            collapse cleanly on narrow cards: company truncates first,
+            then location / salary wrap to a second line rather than
+            blowing past the card edge. */}
+        <div className="mt-1 flex items-center flex-wrap gap-x-4 gap-y-1 text-sm text-ink-2">
+          <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
+            <Briefcase size={14} className="text-ink-3 shrink-0" />
+            <span className="truncate">{job.company}</span>
           </span>
           {job.location && (
-            <span className="inline-flex items-center gap-1">
-              <MapPin size={14} className="text-ink-3" />
-              {job.location}
+            <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
+              <MapPin size={14} className="text-ink-3 shrink-0" />
+              <span className="truncate">{job.location}</span>
             </span>
           )}
           {job.salary_raw && (
-            <span className="text-ink-3">{job.salary_raw}</span>
+            <span className="text-ink-3 whitespace-nowrap">{job.salary_raw}</span>
           )}
         </div>
       </div>

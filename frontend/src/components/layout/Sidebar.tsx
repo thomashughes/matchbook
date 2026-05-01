@@ -19,7 +19,7 @@ const NAV = [
 export function Sidebar() {
   const { logout } = useAuth();
   return (
-    <aside className="group fixed left-0 top-0 h-full bg-ink text-white/85 w-14 hover:w-[220px] transition-all z-30 flex flex-col overflow-hidden">
+    <aside className="group fixed left-0 top-0 h-full bg-ink text-white/85 w-14 hover:w-[220px] transition-all z-30 hidden md:flex flex-col overflow-hidden">
       <div className="h-14 flex items-center gap-2 px-4 shrink-0">
         <Sparkles size={20} className="text-rust shrink-0" />
         <span className="mb-display text-white opacity-0 group-hover:opacity-100 transition">
