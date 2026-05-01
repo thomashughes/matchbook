@@ -24,6 +24,11 @@ node_modules/
 dist/
 .vite/
 *.log
+# Stray tsc emit — Vite is the bundler; tsc runs with noEmit, but ignore
+# any leftover artefacts from an editor or accidental `tsc -b` run.
+frontend/src/**/*.js
+frontend/src/**/*.jsx
+frontend/tsconfig.tsbuildinfo
 
 # Docker volumes when mounted locally
 postgres_data/
