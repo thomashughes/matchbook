@@ -27,15 +27,23 @@ ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 RUN npm run build
 
 # --- Stage 2: runtime ------------------------------------------------------
-FROM nginx:1.27-alpine
+# nginxinc/nginx-unprivileged is the official nginx image rebuilt to run
+# as uid 101 (nginx) end-to-end. The stock nginx:alpine image starts the
+# master as root so it can bind :80 and only drops the workers — an RCE
+# in the master would still be root inside the container. The unprivileged
+# variant binds :8080 instead (no root required) and worker + master both
+# run as nginx. Compose maps host :3085 → container :8080.
+FROM nginxinc/nginx-unprivileged:1.27-alpine
 
-# Replace the default config with one tuned for a React SPA (needs the
-# try_files fallback to index.html so client-side routes 200 instead of 404).
-# security-headers.inc is included from nginx.conf at request time.
+# COPY into /etc/nginx and /usr/share/nginx requires write perms; the base
+# image runs as `nginx` by default, so flip to root for the copies and
+# return to nginx before the entrypoint takes over.
+USER root
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY security-headers.inc /etc/nginx/conf.d/security-headers.inc
-
 COPY --from=build /app/dist /usr/share/nginx/html
+USER nginx
 
-# Nginx listens on 80 inside the container; docker-compose maps that to 3085.
-EXPOSE 80
+# Unprivileged nginx cannot bind a port <1024 without CAP_NET_BIND_SERVICE.
+# 8080 is the conventional unprivileged HTTP port.
+EXPOSE 8080

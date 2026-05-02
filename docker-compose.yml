@@ -130,7 +130,10 @@ services:
     depends_on:
       - backend
     ports:
-      - "3085:80"
+      # Container nginx runs as the unprivileged `nginx` user and listens
+      # on 8080 (cannot bind <1024 without root). Apache continues to
+      # forward public traffic to host:3085 unchanged.
+      - "3085:8080"
 
 volumes:
   postgres_data:
