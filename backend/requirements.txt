@@ -36,7 +36,10 @@ email-validator==2.2.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 pyjwt[crypto]==2.9.0
-cryptography==43.0.1
+# 43.0.1 is affected by CVE-2024-12797 (OpenSSL RFC7250 raw-public-key
+# host verification bypass via the bundled OpenSSL on the cryptography
+# wheel). 43.0.3 ships the patched OpenSSL build.
+cryptography==43.0.3
 
 # File handling (Phase 2+). Listed now so the image is Phase-2-ready.
 python-magic==0.4.27
