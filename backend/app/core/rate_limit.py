@@ -75,6 +75,12 @@ LIMIT_CV_UPLOAD = RateLimit("cv_upload", limit=5, window=60 * 60 * 24)
 # be carpet-bombed even from rotating addresses. 3/hour is more than
 # enough for a real user retrying — anything beyond that is abuse.
 LIMIT_RESEND_VERIFICATION = RateLimit("resend_verify", limit=3, window=60 * 60)
+# Forgot-password is the same shape: low expected volume per legitimate
+# user, very high abuse value (mailbomb a victim, distract while doing
+# something else). Cap by email at 3/hour and additionally by IP at
+# 10/hour as a second layer.
+LIMIT_FORGOT_PASSWORD_EMAIL = RateLimit("forgot_pw_email", limit=3, window=60 * 60)
+LIMIT_FORGOT_PASSWORD_IP = RateLimit("forgot_pw_ip", limit=10, window=60 * 60)
 
 
 async def check_rate_limit(identifier: str, rule: RateLimit) -> dict[str, str]:

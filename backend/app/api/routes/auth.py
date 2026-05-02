@@ -48,6 +48,8 @@ from app.core.email import (
     verification_email_body,
 )
 from app.core.rate_limit import (
+    LIMIT_FORGOT_PASSWORD_EMAIL,
+    LIMIT_FORGOT_PASSWORD_IP,
     LIMIT_LOGIN,
     LIMIT_REFRESH,
     LIMIT_RESEND_VERIFICATION,
@@ -104,6 +106,11 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
                        trigger a refresh using ambient credentials.
     path=/api/v1/auth — cookie is only sent on auth endpoints, never
                        leaked to unrelated API calls.
+
+    Why no __Host- prefix: the prefix mandates Path=/ which would lift
+    the path scoping above. Path-scoping the cookie to /api/v1/auth is
+    the stronger constraint — the cookie can't even be observed by code
+    outside the auth namespace. We deliberately trade __Host- for that.
     """
     response.set_cookie(
         key=REFRESH_COOKIE,
@@ -385,14 +392,25 @@ async def logout(
     dependencies=[Depends(rate_limit_unauth_ip)],
 )
 async def forgot_password(
-    body: ForgotPasswordIn, db: AsyncSession = Depends(get_db)
+    body: ForgotPasswordIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
 ) -> MessageOut:
     """Send a reset link if the email matches a user.
+
+    Two-bucket rate limiting on top of the shared 20/min unauth bucket:
+      - per IP, 10/hour (stops a single host carpet-bombing many users)
+      - per email, 3/hour (stops rotating IPs targeting one inbox)
+    Either bucket trips → 429 before the DB lookup, so an attacker can't
+    use this route as an enumeration probe under the limit either.
 
     Same enumeration-resistant response pattern as /register. Token TTL
     is 1 hour (see email.RESET_TTL_SECONDS) — short because a leaked
     reset link gives an attacker full account takeover.
     """
+    await check_rate_limit(client_ip(request), LIMIT_FORGOT_PASSWORD_IP)
+    await check_rate_limit(body.email.lower(), LIMIT_FORGOT_PASSWORD_EMAIL)
+
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if user is not None:
