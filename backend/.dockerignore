@@ -1,0 +1,32 @@
+# Anything listed here is excluded from the Docker build context, so
+# `COPY . .` in the Dockerfile cannot pick it up. Critical for keys/ —
+# the RS256 private key is mounted into the running container as a
+# read-only volume, NOT baked into the image.
+
+# Secrets — never copy into image layers.
+keys/
+*.pem
+*.key
+.env
+.env.*
+
+# Python build artefacts.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.venv/
+venv/
+
+# IDE / editor.
+.idea/
+.vscode/
+.DS_Store
+
+# Local-only files that don't belong in the image.
+*.md
+tests/
+.git/

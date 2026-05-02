@@ -1,0 +1,20 @@
+# Anything listed here is excluded from the Docker build context.
+# Build runs `npm install && npm run build` inside the image, so the
+# host's node_modules and dist must NOT be copied — they pollute the
+# layer and can shadow the freshly-installed deps.
+
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+
+.env
+.env.*
+
+.idea/
+.vscode/
+.DS_Store
+
+*.md
+.git/
