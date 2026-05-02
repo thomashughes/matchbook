@@ -45,14 +45,46 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# Hard cap on request body size, enforced before route code runs. This
+# mirrors the nginx client_max_body_size 10m so a request that bypasses
+# the proxy (someone hitting :3086 directly on the host, or a future
+# misconfig) still can't post a gigabyte of garbage and OOM the worker.
+# CV upload (the largest legitimate body) tops out at ~5MB, so 10MB has
+# plenty of headroom. Returns 413 with no body parse — the request
+# stream is never read.
+_MAX_REQUEST_BYTES = 10 * 1024 * 1024
+
+
+@app.middleware("http")
+async def _enforce_max_body_size(request: Request, call_next):
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > _MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large."},
+                )
+        except ValueError:
+            # Malformed Content-Length — let the framework reject it.
+            pass
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     # Required for the refresh cookie to be sent on /auth/refresh from
     # the frontend origin.
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Pinned to actual usage rather than "*". With allow_credentials=True
+    # the spec disallows wildcards anyway (browsers reject the response),
+    # but Starlette papers over that by echoing the request's method/headers
+    # — which is functionally equivalent to a wildcard. Listing them
+    # explicitly makes the contract obvious to a reader and removes the
+    # surface for header-based gadget attacks.
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
     expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
 )
 
@@ -106,14 +138,18 @@ async def _log_validation_errors(
             body_preview = body.decode("utf-8")[:2000]
         except Exception:
             body_preview = "<unreadable>"
+    # Pydantic v2 may surface the original Python exception inside the
+    # error's `ctx` field, which json.dumps can't serialise without help.
+    # Round-trip through default=str so the response is always emittable.
+    safe_errors = _json.loads(_json.dumps(exc.errors(), default=str))
     logging.getLogger("uvicorn.error").warning(
         "422 on %s %s | errors=%s | body=%s",
         request.method,
         path,
-        _json.dumps(exc.errors(), default=str)[:1500],
+        _json.dumps(safe_errors)[:1500],
         body_preview,
     )
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
 
 
 @app.get("/healthz", tags=["meta"])
