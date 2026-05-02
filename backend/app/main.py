@@ -35,6 +35,48 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+
+def _preflight_jwt_keys() -> None:
+    """Fail loud at boot if the RS256 PEM files aren't readable.
+
+    Lazy reads inside route handlers turn a config/permissions problem
+    into a 500 on the first login — opaque to the user and easy to miss
+    in logs. This eagerly opens both files during import so uvicorn
+    crashes with a clear message and the orchestrator restart-loops with
+    that message in the logs instead.
+
+    The historical bite this guards against: the backend container runs
+    as a non-root appuser (uid 1000), but `openssl genrsa` defaults to
+    mode 0600 owned by whoever ran it on the host. Docker bind-mounts
+    preserve host uid/gid verbatim, so appuser silently can't read the
+    keys and `jwt.encode()` raises PermissionError on every login.
+    """
+    for label, path in (
+        ("private", settings.JWT_PRIVATE_KEY_PATH),
+        ("public", settings.JWT_PUBLIC_KEY_PATH),
+    ):
+        try:
+            with open(path, "rb") as f:
+                if not f.read(1):
+                    raise RuntimeError(
+                        f"JWT {label} key at {path} is empty. "
+                        f"Regenerate the keypair or check the bind mount."
+                    )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"JWT {label} key not found at {path}. "
+                f"Check JWT_{label.upper()}_KEY_PATH and the volume mount in docker-compose.yml."
+            ) from e
+        except PermissionError as e:
+            raise RuntimeError(
+                f"JWT {label} key at {path} is not readable by this process. "
+                f"On the host: `chmod 0644 {path}` (and 0755 on the parent dir). "
+                f"The container appuser is uid 1000; host file ownership is preserved through bind mounts."
+            ) from e
+
+
+_preflight_jwt_keys()
+
 app = FastAPI(
     title="Matchbook API",
     version="2.0.0",
