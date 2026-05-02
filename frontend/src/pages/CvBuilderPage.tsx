@@ -19,6 +19,7 @@ import {
   AlertTriangle,
   Check,
   Download,
+  ExternalLink,
   FileText,
   Loader2,
   Plus,
@@ -770,6 +771,25 @@ function usePdfBlob(cvId: string | undefined) {
   return { url, err, loading };
 }
 
+// iOS Safari and most mobile WebKit/Blink builds refuse to render PDFs
+// inside an <iframe> — they paint a blank rectangle with no error. We
+// detect "mobile-ish" via viewport width OR coarse pointer (covers
+// tablets in portrait that have plenty of width but still no inline PDF
+// support) and swap the iframe for a tap-through card.
+function useIsMobilePdfHostile(): boolean {
+  const query = '(max-width: 768px), (pointer: coarse)';
+  const [hostile, setHostile] = useState<boolean>(() =>
+    typeof window === 'undefined' ? false : window.matchMedia(query).matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = (e: MediaQueryListEvent) => setHostile(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return hostile;
+}
+
 function PreviewView({
   current,
   versions,
@@ -794,6 +814,7 @@ function PreviewView({
   const remove = useDeleteCvVersion();
   const rebuild = useRebuildProfileFromCv();
   const pdf = usePdfBlob(current.id);
+  const isMobile = useIsMobilePdfHostile();
   const [feedback, setFeedback] = useState<'idle' | 'liked' | 'disliked'>(
     'idle',
   );
@@ -885,18 +906,21 @@ function PreviewView({
         </div>
       </div>
 
-      {/* PDF preview — the browser's native renderer handles pagination,
-          fonts, layout. The user sees two pages if the CV runs long. */}
+      {/* PDF preview — desktop uses the browser's native renderer in an
+          iframe. On mobile (iOS Safari, mobile Chrome) iframe-embedded
+          PDFs render as a blank rectangle, so we show a tap-to-open card
+          that hands the blob URL to the OS / native viewer instead. */}
       <div
         className="rounded-xl overflow-hidden"
         style={{
           background: 'var(--parchment)',
           border: '0.5px solid var(--border)',
-          height: '900px',
+          height: isMobile ? 'auto' : '900px',
+          minHeight: isMobile ? '180px' : undefined,
         }}
       >
         {pdf.loading && (
-          <div className="h-full flex items-center justify-center text-ink-2">
+          <div className="h-full flex items-center justify-center text-ink-2 py-12">
             <Loader2 size={24} className="animate-spin" />
           </div>
         )}
@@ -907,12 +931,34 @@ function PreviewView({
           </div>
         )}
         {pdf.url && !pdf.loading && !pdf.err && (
-          <iframe
-            title={`CV v${current.version}`}
-            src={pdf.url}
-            className="w-full h-full"
-            style={{ border: 'none' }}
-          />
+          isMobile ? (
+            <div className="flex flex-col items-center justify-center text-center p-6 gap-3">
+              <FileText size={32} className="text-ink-2" />
+              <div className="text-sm text-ink">
+                CV preview v{current.version}
+              </div>
+              <div className="text-xs text-ink-muted max-w-xs">
+                Mobile browsers don't render PDFs inline — tap below to
+                open in your device's PDF viewer.
+              </div>
+              <a
+                href={pdf.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mb-btn-primary text-xs"
+              >
+                <ExternalLink size={12} className="mr-1" />
+                Open PDF
+              </a>
+            </div>
+          ) : (
+            <iframe
+              title={`CV v${current.version}`}
+              src={pdf.url}
+              className="w-full h-full"
+              style={{ border: 'none' }}
+            />
+          )
         )}
       </div>
 
