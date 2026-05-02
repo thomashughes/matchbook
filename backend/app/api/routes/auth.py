@@ -29,7 +29,7 @@ Cross-cutting behaviours intentionally kept in this module:
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -49,16 +49,20 @@ from app.core.email import (
 )
 from app.core.rate_limit import (
     LIMIT_LOGIN,
+    LIMIT_REFRESH,
     LIMIT_RESEND_VERIFICATION,
     check_rate_limit,
 )
 from app.core.security import (
+    ACCESS_TYPE,
     REFRESH_TYPE,
     TokenError,
     create_access_token,
     create_refresh_token,
     decode_token,
+    deny_jti,
     hash_password,
+    is_jti_denied,
     verify_password,
 )
 from app.models.user import User
@@ -294,30 +298,80 @@ async def login(
 async def refresh(request: Request) -> JSONResponse:
     """Exchange the refresh cookie for a fresh access token (and rotate).
 
-    No rate limit here: a high refresh rate is a sign of something weird
-    but not inherently abusive, and legitimate clients may refresh
-    frequently during active use. If abuse emerges we can add one.
+    Rate-limited at LIMIT_REFRESH (30/min/IP). The cookie itself is
+    SameSite=Strict + httponly + path-scoped, so cross-site abuse is
+    already blocked — the cap is defence-in-depth against a stolen-
+    cookie replay flood, not against legitimate active clients.
+
+    On rotation we revoke the OLD refresh jti so a leaked cookie can't
+    be replayed once the legitimate browser has refreshed: classic
+    refresh-token-rotation pattern.
     """
+    await check_rate_limit(client_ip(request), LIMIT_REFRESH)
+
     cookie = request.cookies.get(REFRESH_COOKIE)
     if not cookie:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="No refresh cookie")
 
     try:
-        user_id = decode_token(cookie, expected_type=REFRESH_TYPE)
+        decoded = decode_token(cookie, expected_type=REFRESH_TYPE)
     except TokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
-    return _token_response(user_id, Response())
+    # Reject a refresh whose jti has already been used (logout, prior
+    # rotation, manual revocation). Without this check, a stolen cookie
+    # would remain valid until its 7-day exp.
+    if await is_jti_denied(decoded.jti):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    # Burn the old jti before issuing the replacement: if anything goes
+    # wrong after this point the user can re-login, but a leaked cookie
+    # never gets a second use.
+    await deny_jti(decoded.jti, decoded.exp)
+
+    return _token_response(decoded.user_id, Response())
 
 
 # --- Logout ----------------------------------------------------------------
 
 
 @router.post("/logout", response_model=MessageOut)
-async def logout(response: Response) -> MessageOut:
-    """Clear the refresh cookie. The access token remains valid until it
-    expires (≤15 min) — Phase 2 will add a jti blacklist for immediate
-    revocation if the threat model demands it."""
+async def logout(
+    request: Request,
+    response: Response,
+    authorization: str | None = Header(default=None),
+) -> MessageOut:
+    """Clear the refresh cookie AND revoke both tokens immediately.
+
+    Refresh side: pull the cookie, decode it, denylist the jti — even if
+    the browser somehow keeps the cookie around or it's been copied
+    elsewhere, it can't be used again.
+
+    Access side: the frontend sends `Authorization: Bearer <access>` so
+    we can denylist the live access jti too. Without this, a logged-out
+    user's still-in-memory access token would remain accepted for up to
+    15 minutes — uncomfortable on a shared machine.
+
+    All decode failures are swallowed: logout must always succeed from
+    the user's perspective, even with a malformed token. The cookie
+    clear and the response shape don't change.
+    """
+    cookie = request.cookies.get(REFRESH_COOKIE)
+    if cookie:
+        try:
+            decoded = decode_token(cookie, expected_type=REFRESH_TYPE)
+            await deny_jti(decoded.jti, decoded.exp)
+        except TokenError:
+            pass
+
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        try:
+            decoded = decode_token(token, expected_type=ACCESS_TYPE)
+            await deny_jti(decoded.jti, decoded.exp)
+        except TokenError:
+            pass
+
     _clear_refresh_cookie(response)
     return MessageOut(message="Logged out")
 

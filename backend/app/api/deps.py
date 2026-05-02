@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.entitlements import consume
 from app.core.rate_limit import LIMIT_AUTH_UNAUTH, check_rate_limit
-from app.core.security import ACCESS_TYPE, TokenError, decode_token
+from app.core.security import ACCESS_TYPE, TokenError, decode_token, is_jti_denied
 from app.models.user import User
 
 
@@ -74,11 +74,17 @@ async def get_current_user(
 
     token = authorization.split(" ", 1)[1].strip()
     try:
-        user_id: UUID = decode_token(token, expected_type=ACCESS_TYPE)
+        decoded = decode_token(token, expected_type=ACCESS_TYPE)
     except TokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    # Revocation check: a logged-out or compromised access token's jti
+    # lives in Redis until its own exp passes. Reject before we touch
+    # the DB so a denied token can't even enumerate user existence.
+    if await is_jti_denied(decoded.jti):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    result = await db.execute(select(User).where(User.id == decoded.user_id))
     user = result.scalar_one_or_none()
     if user is None:
         # Token is valid but user was deleted. Treat as logged-out.

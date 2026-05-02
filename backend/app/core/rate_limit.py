@@ -64,6 +64,11 @@ class RateLimit:
 # numbers are auditable in one place rather than scattered through routes.
 LIMIT_AUTH_UNAUTH = RateLimit("auth_unauth", limit=20, window=60)
 LIMIT_LOGIN = RateLimit("login", limit=10, window=60)
+# Refresh is keyed by IP (no authenticated user yet — they're presenting
+# the cookie precisely to prove identity). 30/min comfortably covers a
+# legitimate active session refreshing every ~10 min, while caging a
+# stolen-cookie replay flood.
+LIMIT_REFRESH = RateLimit("refresh", limit=30, window=60)
 LIMIT_AI = RateLimit("ai", limit=60, window=60)
 LIMIT_CV_UPLOAD = RateLimit("cv_upload", limit=5, window=60 * 60 * 24)
 # Resend-verification is keyed BY EMAIL (not IP) so a single inbox can't
