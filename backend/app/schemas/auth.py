@@ -9,7 +9,24 @@ Why a separate schema layer (vs returning ORM models directly):
     - OpenAPI docs become accurate because FastAPI introspects these.
 """
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+
+# bcrypt's input is silently truncated at 72 bytes. Two distinct passwords
+# whose first 72 UTF-8 bytes are identical therefore hash to the same value
+# — a subtle collision risk that's easy to overlook because it only bites
+# users with very long passwords. Refuse anything past the limit at the
+# validation layer so the truncation never happens.
+_BCRYPT_MAX_BYTES = 72
+
+
+def _password_within_bcrypt_limit(v: str) -> str:
+    if len(v.encode("utf-8")) > _BCRYPT_MAX_BYTES:
+        raise ValueError(
+            f"Password is too long ({_BCRYPT_MAX_BYTES} bytes max). "
+            "Each emoji or non-ASCII letter counts as several bytes."
+        )
+    return v
 
 
 # --- Input schemas ---------------------------------------------------------
@@ -19,15 +36,21 @@ class RegisterIn(BaseModel):
     # EmailStr enforces syntactic email validity. Deliverability is checked
     # via the verification email, not here.
     email: EmailStr
-    # 8 char min is NIST SP 800-63B guidance floor. Max 128 prevents bcrypt
-    # DoS (bcrypt hashes up to 72 bytes anyway; longer is wasted CPU and
-    # can be used to slow the server with giant inputs).
+    # 8 char min is NIST SP 800-63B guidance floor. Char max is generous so
+    # we don't surprise users typing a long passphrase; the byte-level cap
+    # in _password_within_bcrypt_limit is the load-bearing constraint.
     password: str = Field(min_length=8, max_length=128)
+
+    _validate_password = field_validator("password")(_password_within_bcrypt_limit)
 
 
 class LoginIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+    # No byte-level validator on /login: rejecting an over-72-byte input
+    # at this layer would leak that bcrypt is the backend (an attacker
+    # submitting a 200-char string would get a different error than for
+    # a wrong password). Instead the verify path simply fails to match.
 
 
 class VerifyEmailIn(BaseModel):
@@ -45,6 +68,8 @@ class ResendVerificationIn(BaseModel):
 class ResetPasswordIn(BaseModel):
     token: str = Field(min_length=16, max_length=256)
     new_password: str = Field(min_length=8, max_length=128)
+
+    _validate_new_password = field_validator("new_password")(_password_within_bcrypt_limit)
 
 
 # --- Output schemas --------------------------------------------------------
