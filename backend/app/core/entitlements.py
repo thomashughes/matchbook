@@ -49,7 +49,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -375,6 +375,14 @@ async def refund(
     """
     start, _end = current_window(user)
 
+    # Floor at zero with GREATEST(count - 1, 0). The previous version
+    # used unbounded subtraction "for portability", but this app is
+    # Postgres-only and an unbounded refund is exploitable: any path
+    # where refund() runs without a matching consume() (cleanup-after-
+    # exception double-fire, future bug, deliberate trigger) drives the
+    # counter negative and grants the user free credits on subsequent
+    # legitimate consumes.
+    count_col = UsageCounter.__table__.c.count
     stmt = (
         update(UsageCounter)
         .where(
@@ -382,16 +390,12 @@ async def refund(
             UsageCounter.resource == resource,
             UsageCounter.window_start == start,
         )
-        .values(count=UsageCounter.__table__.c.count.op("-")(1))
+        .values(count=func.greatest(count_col - 1, 0))
     )
     if scope_key is None:
         stmt = stmt.where(UsageCounter.scope_key.is_(None))
     else:
         stmt = stmt.where(UsageCounter.scope_key == scope_key)
 
-    # Note: we use `count - 1` directly rather than GREATEST(count-1, 0)
-    # for portability (GREATEST is Postgres-specific). If this ever
-    # returned -1 in practice we'd see it in analytics; the downstream
-    # check `count > limit` still behaves correctly with a floor at -N.
     await db.execute(stmt)
     await db.commit()
