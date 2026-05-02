@@ -10,12 +10,14 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Copy manifest first so `npm ci` caches independently of source changes.
-COPY package.json ./
-# npm install (not ci) because we don't commit the lockfile yet — Phase 1
-# is pre-lockfile. Phase 5 (CI/CD hardening) switches to `npm ci` against
-# a committed package-lock.json for reproducible builds.
-RUN npm install
+# Copy both manifest + lockfile first so the install layer caches
+# independently of source changes — only invalidated when deps actually
+# change. `npm ci` requires both files and refuses to run if they're
+# out of sync, which is the whole point: every build pulls the exact
+# versions in the committed lockfile, so a CI build and a local build
+# can't drift onto different transitive versions.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 
